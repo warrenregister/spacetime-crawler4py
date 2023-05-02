@@ -1,8 +1,8 @@
 import unittest
 from utils import get_urlhash
-from crawler.multi_thread_frontier import (Frontier,
-                                           get_urls_from_sitemap,
-                                           get_robots_txt_parser_for_domain)
+from crawler.frontier import (Frontier,
+                              get_urls_from_sitemap,
+                              get_robots_txt_parser_for_domain)
 from urllib.robotparser import RobotFileParser
 from utils.config import Config
 from configparser import ConfigParser
