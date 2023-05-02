@@ -5,7 +5,7 @@ from collections import Counter
 from threading import Thread, RLock
 from queue import Queue, Empty
 
-from utils import get_logger, get_urlhash, normalize, parse_url
+from utils import get_logger, get_urlhash, normalize
 from scraper import is_valid
 
 import time
