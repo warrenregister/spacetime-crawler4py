@@ -36,6 +36,9 @@ class Worker(Thread):
         super().__init__(daemon=True)
     
     def run(self):
+        """
+        Run the worker loop until there are no more URLs to be downloaded.
+        """
         while True:
             tbd_url = self.frontier.get_tbd_url()
             if not tbd_url:

@@ -5,38 +5,6 @@ from nltk.corpus import stopwords
 from bs4 import BeautifulSoup
 
 
-def get_domain(url):
-    parsed_uri = urlparse(url)
-    return f"{parsed_uri.scheme}://{parsed_uri.netloc}"
-
-
-def fetch_robots_txt(url):
-    domain = get_domain(url)
-    robots_txt_url = urljoin(domain, "/robots.txt")
-    response = requests.get(robots_txt_url)
-    return response.text if response.status_code == 200 else ""
-
-
-def parse_robots_txt(robots_txt, user_agent="*"):
-    rules = {"User-agent": user_agent, "Disallow": [], "Crawl-delay": None}
-    lines = robots_txt.strip().split("\n")
-
-    for line in lines:
-        line = line.strip()
-
-        if line.startswith("User-agent"):
-            agent = line.split(":")[1].strip()
-            if agent == user_agent:
-                rules["User-agent"] = agent
-        elif line.startswith("Disallow"):
-            path = line.split(":")[1].strip()
-            rules["Disallow"].append(path)
-        elif line.startswith("Crawl-delay"):
-            delay = float(line.split(":")[1].strip())
-            rules["Crawl-delay"] = delay
-
-    return rules
-
 
 def scraper(url, resp, robots_rules):
     links = extract_next_links(url, resp)
@@ -44,12 +12,6 @@ def scraper(url, resp, robots_rules):
     subdomain = None
     if resp.status != 200:
         return [], words, subdomain
-    
-    domain = get_domain(url)
-    if domain not in robots_rules:
-        robots_txt = fetch_robots_txt(url)
-        rules = parse_robots_txt(robots_txt)
-        robots_rules[domain] = rules
     
     content_type = resp.raw_response.headers.get('Content-Type', '').lower()
     if "text/html" in content_type:
@@ -60,12 +22,7 @@ def scraper(url, resp, robots_rules):
         # Count words in the text
         words = count_words(text)
 
-        # Store subdomains for ics.uci.edu
-        if ".ics.uci.edu" in url:
-            parsed_url = urlsplit(url)
-            subdomain = f"{parsed_url.scheme}://{parsed_url.netloc}"
-
-    return ([link for link in links if is_valid(link)], words, subdomain)
+    return ([link for link in links if is_valid(link)], words)
 
 def count_words(text):
     stop_words = set(stopwords.words('english'))
