@@ -1,6 +1,15 @@
 import pickle
 
 class Response(object):
+    """
+    A class representing an HTTP response.
+
+    Attributes:
+        url (str): The requested URL.
+        status (int): The HTTP status code.
+        error (str): An error message, if any.
+        raw_response (bytes): The raw response content.
+    """
     def __init__(self, resp_dict):
         self.url = resp_dict["url"]
         self.status = resp_dict["status"]

@@ -2,6 +2,19 @@ import re
 
 
 class Config(object):
+    """
+    A class representing the crawler configuration.
+    
+    Attributes:
+        user_agent (str): The user agent string for the crawler.
+        threads_count (int): The number of worker threads.
+        save_file (str): The filename for saving the crawler state.
+        host (str): The host for the cache server.
+        port (int): The port number for the cache server.
+        seed_urls (list): The list of seed URLs for the crawler.
+        time_delay (float): The politeness time delay between requests.
+        cache_server (str): The cache server address (host and port).
+    """
     def __init__(self, config):
         self.user_agent = config["IDENTIFICATION"]["USERAGENT"].strip()
         print (self.user_agent)

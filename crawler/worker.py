@@ -8,7 +8,25 @@ import time
 
 
 class Worker(Thread):
+    """
+    The Worker class is a subclass of Thread that downloads URLs from the Frontier
+    and processes them using the scraper function from scraper.py. Each Worker
+    instance runs concurrently in a separate thread.
+    
+    Attributes:
+        config (Config): A Config object containing the crawler configuration.
+        frontier (Frontier): A Frontier object managing the list of URLs to be downloaded and their state.
+    """
+
     def __init__(self, worker_id, config, frontier):
+        """
+        Initialize the Worker with the given worker_id, configuration, and frontier.
+        
+        Args:
+            worker_id (int): A unique identifier for the worker.
+            config (Config): A Config object containing the crawler configuration.
+            frontier (Frontier): A Frontier object managing the list of URLs to be downloaded and their state.
+        """
         self.logger = get_logger(f"Worker-{worker_id}", "Worker")
         self.config = config
         self.frontier = frontier
@@ -18,6 +36,10 @@ class Worker(Thread):
         super().__init__(daemon=True)
         
     def run(self):
+        """
+        Continuously download and process URLs from the Frontier until the Frontier is empty.
+        After processing each URL, the Worker sleeps for a time delay specified in the config.
+        """
         while True:
             tbd_url = self.frontier.get_tbd_url()
             if not tbd_url:
@@ -27,7 +49,9 @@ class Worker(Thread):
             self.logger.info(
                 f"Downloaded {tbd_url}, status <{resp.status}>, "
                 f"using cache {self.config.cache_server}.")
-            scraped_urls = scraper.scraper(tbd_url, resp)
+            scraped_urls, words, subdomain = scraper.scraper(tbd_url, resp)
+            self.frontier.add_words(words)
+            self.frontier.add_subdomain(subdomain)
             for scraped_url in scraped_urls:
                 self.frontier.add_url(scraped_url)
             self.frontier.mark_url_complete(tbd_url)

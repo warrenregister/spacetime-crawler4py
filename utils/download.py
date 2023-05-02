@@ -5,6 +5,17 @@ import time
 from utils.response import Response
 
 def download(url, config, logger=None):
+    """
+    Download the content of the given URL using the cache server.
+
+    Args:
+        url (str): The URL to download.
+        config (Config): A Config object containing the crawler configuration.
+        logger (logging.Logger, optional): The logger to use for error messages. Defaults to None.
+
+    Returns:
+        Response: A Response object containing the downloaded content and metadata.
+    """
     host, port = config.cache_server
     resp = requests.get(
         f"http://{host}:{port}/",

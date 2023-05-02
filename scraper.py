@@ -1,40 +1,137 @@
 import re
-from urllib.parse import urlparse
+from collections import Counter
+from urllib.parse import urlsplit, urljoin, urlparse
+from nltk.corpus import stopwords
+from bs4 import BeautifulSoup
 
-def scraper(url, resp):
+
+def get_domain(url):
+    parsed_uri = urlparse(url)
+    return f"{parsed_uri.scheme}://{parsed_uri.netloc}"
+
+
+def fetch_robots_txt(url):
+    domain = get_domain(url)
+    robots_txt_url = urljoin(domain, "/robots.txt")
+    response = requests.get(robots_txt_url)
+    return response.text if response.status_code == 200 else ""
+
+
+def parse_robots_txt(robots_txt, user_agent="*"):
+    rules = {"User-agent": user_agent, "Disallow": [], "Crawl-delay": None}
+    lines = robots_txt.strip().split("\n")
+
+    for line in lines:
+        line = line.strip()
+
+        if line.startswith("User-agent"):
+            agent = line.split(":")[1].strip()
+            if agent == user_agent:
+                rules["User-agent"] = agent
+        elif line.startswith("Disallow"):
+            path = line.split(":")[1].strip()
+            rules["Disallow"].append(path)
+        elif line.startswith("Crawl-delay"):
+            delay = float(line.split(":")[1].strip())
+            rules["Crawl-delay"] = delay
+
+    return rules
+
+
+def scraper(url, resp, robots_rules):
     links = extract_next_links(url, resp)
-    return [link for link in links if is_valid(link)]
+    words = None
+    subdomain = None
+    if resp.status != 200:
+        return [], words, subdomain
+    
+    domain = get_domain(url)
+    if domain not in robots_rules:
+        robots_txt = fetch_robots_txt(url)
+        rules = parse_robots_txt(robots_txt)
+        robots_rules[domain] = rules
+    
+    content_type = resp.raw_response.headers.get('Content-Type', '').lower()
+    if "text/html" in content_type:
+        # Extract text content from HTML
+        soup = BeautifulSoup(resp.raw_response.content, 'html.parser')
+        text = soup.get_text()
+
+        # Count words in the text
+        words = count_words(text)
+
+        # Store subdomains for ics.uci.edu
+        if ".ics.uci.edu" in url:
+            parsed_url = urlsplit(url)
+            subdomain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+    return ([link for link in links if is_valid(link)], words, subdomain)
+
+def count_words(text):
+    stop_words = set(stopwords.words('english'))
+    words = re.findall(r'\b\w+\b', text.lower())
+    words = [word for word in words if word not in stop_words]
+    return Counter(words)
+
 
 def extract_next_links(url, resp):
-    # Implementation required.
-    # url: the URL that was used to get the page
-    # resp.url: the actual url of the page
-    # resp.status: the status code returned by the server. 200 is OK, you got the page. Other numbers mean that there was some kind of problem.
-    # resp.error: when status is not 200, you can check the error here, if needed.
-    # resp.raw_response: this is where the page actually is. More specifically, the raw_response has two parts:
-    #         resp.raw_response.url: the url, again
-    #         resp.raw_response.content: the content of the page!
-    # Return a list with the hyperlinks (as strings) scrapped from resp.raw_response.content
-    return list()
+    if resp.status != 200 or not resp.raw_response:
+        return []
+
+    soup = BeautifulSoup(resp.raw_response.content, "html.parser")
+    links = []
+
+    for anchor in soup.find_all("a"):
+        href = anchor.get("href")
+        if href:
+            full_url = urljoin(url, href)
+            links.append(full_url)
+
+    return links
 
 def is_valid(url):
-    # Decide whether to crawl this url or not. 
-    # If you decide to crawl it, return True; otherwise return False.
-    # There are already some conditions that return False.
+    """
+    Checks if the URL is valid based on the given requirements.
+
+    Args:
+        url (str): The URL to be checked.
+
+    Returns:
+        bool: True if the URL is valid, False otherwise.
+    """
+    allowed_domains = [
+        r"^.+\.ics\.uci\.edu(/.*)?$",
+        r"^.+\.cs\.uci\.edu(/.*)?$",
+        r"^.+\.informatics\.uci\.edu(/.*)?$",
+        r"^.+\.stat\.uci\.edu(/.*)?$"
+    ]
+
     try:
         parsed = urlparse(url)
-        if parsed.scheme not in set(["http", "https"]):
+        if not parsed.scheme or not parsed.hostname:
             return False
-        return not re.match(
-            r".*\.(css|js|bmp|gif|jpe?g|ico"
-            + r"|png|tiff?|mid|mp2|mp3|mp4"
-            + r"|wav|avi|mov|mpeg|ram|m4v|mkv|ogg|ogv|pdf"
-            + r"|ps|eps|tex|ppt|pptx|doc|docx|xls|xlsx|names"
-            + r"|data|dat|exe|bz2|tar|msi|bin|7z|psd|dmg|iso"
-            + r"|epub|dll|cnf|tgz|sha1"
-            + r"|thmx|mso|arff|rtf|jar|csv"
-            + r"|rm|smil|wmv|swf|wma|zip|rar|gz)$", parsed.path.lower())
+
+        # Check if the URL belongs to one of the allowed domains
+        valid_domain = any(re.match(domain, url) for domain in allowed_domains)
+        if not valid_domain:
+            return False
+
+        # Additional checks for URL patterns
+        # Add more checks here if needed
+        return not re.match(r".*\.(css|js|bmp|gif|jpe?g|ico|png|tiff?|mid|mp2|mp3|mp4"
+                            r"|wav|avi|mov|mpeg|ram|m4v|mkv|ogg|ogv|pdf"
+                            r"|ps|eps|tex|ppt|pptx|doc|docx|xls|xlsx|names"
+                            r"|data|dat|exe|bz2|tar|msi|bin|7z|psd|dmg|iso"
+                            r"|epub|dll|cnf|tgz|sha1"
+                            r"|thmx|mso|arff|rtf|jar|csv"
+                            r"|rm|smil|wmv|swf|wma|zip|rar|gz|pdf)$", url.lower())
 
     except TypeError:
-        print ("TypeError for ", parsed)
-        raise
+        return False
+
+
+if __name__ == "__main__":
+    print(is_valid("http://www.ics.uci.edu"))
+    print(is_valid("http://www.cs.uci.edu"))
+    print(is_valid("http://www.informatics.uci.edu"))
+    print(is_valid("http://www.stat.uci.edu"))

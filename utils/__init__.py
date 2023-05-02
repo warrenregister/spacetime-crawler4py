@@ -4,6 +4,16 @@ from hashlib import sha256
 from urllib.parse import urlparse
 
 def get_logger(name, filename=None):
+    """
+    Create a logger with the specified name and optional filename.
+    
+    Args:
+        name (str): The name of the logger.
+        filename (str, optional): The filename for the log file. Defaults to None.
+
+    Returns:
+        logger (logging.Logger): A configured logger instance.
+    """
     logger = logging.getLogger(name)
     logger.setLevel(logging.INFO)
     if not os.path.exists("Logs"):
@@ -23,6 +33,16 @@ def get_logger(name, filename=None):
 
 
 def get_urlhash(url):
+    """
+    Generate a hash of the given URL.
+    
+    Args:
+        url (str): The URL to be hashed.
+
+    Returns:
+        str: A SHA-256 hash of the URL.
+    """
+
     parsed = urlparse(url)
     # everything other than scheme.
     return sha256(
@@ -30,6 +50,15 @@ def get_urlhash(url):
         f"{parsed.query}/{parsed.fragment}".encode("utf-8")).hexdigest()
 
 def normalize(url):
+    """
+    Normalize the given URL by removing a trailing forward slash, if present.
+
+    Args:
+        url (str): The URL to be normalized.
+
+    Returns:
+        str: The normalized URL.
+    """
     if url.endswith("/"):
         return url.rstrip("/")
     return url
