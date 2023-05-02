@@ -7,11 +7,12 @@ from queue import Empty, Queue
 from threading import RLock
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
-
+from io import StringIO
 import requests
 from lxml import etree
 
 from scraper import is_valid
+from utils.download import download
 from utils import get_logger, get_urlhash, normalize
 
 
@@ -73,7 +74,8 @@ class Frontier(object):
         # Get robots.txt parsers and process sitemaps for seed urls
         for url in self.config.seed_urls:
             self.get_robots_txt_parser(url)
-            self.process_sitemaps(url)
+            sitemaps = self.get_sitemap_urls_from_robots_txt(url)
+            self.process_sitemaps(sitemaps)
 
     def _parse_save_file(self):
         """
@@ -90,60 +92,6 @@ class Frontier(object):
                 f"Found {tbd_count} urls to be downloaded from {total_count} "
                 f"total urls discovered.")
     
-    def get_robots_txt_parser(self, url):
-        """
-        Get robots.txt parser for domain of url.
-
-        Parameters:
-            url (str): url to get robots.txt parser for
-        
-        Returns:
-            RobotFileParser: robots.txt parser for domain of url
-        """
-        domain = urlparse(url).netloc
-        if domain not in self.robots_parsers:
-            self.robots_parsers[domain] = get_robots_txt_parser_for_domain(domain)
-        return self.robots_parsers[domain]
-
-    def get_sitemap_urls_from_robots_txt(self, url):
-        """
-        Get sitemap urls from robots.txt for domain of url.
-
-        Parameters:
-            url (str): url to get sitemap urls for
-        
-        Returns:
-            list: list of sitemap urls
-        """
-        domain = urlparse(url).netloc
-        if domain in self.sitemaps:
-            parser = self.sitemaps[domain]
-        else:
-         parser = self.get_robots_txt_parser(url)
-        sitemap_urls = []
-
-        for link in parser.sitemaps:
-            sitemap_urls.append(link)
-
-        return sitemap_urls
-
-    def process_sitemap(self, sitemap_url, domain):
-        """
-        Process sitemap url.
-
-        Parameters:
-            sitemap_url (str): url of sitemap
-            domain (str): domain of sitemap
-        
-        Returns:
-            list: list of urls from sitemap
-        """
-        if sitemap_url not in self.sitemaps[domain]:
-            self.sitemaps[domain].add(sitemap_url)
-            urls_from_sitemap = get_urls_from_sitemap(sitemap_url)
-            for url in urls_from_sitemap:
-                self.add_url(url)
-
     def get_tbd_url(self):
         """
         Get next url to be downloaded.
@@ -166,7 +114,7 @@ class Frontier(object):
                             del self.domains[domain]
 
                 time.sleep(self.politeness_delay)
-
+    
     def add_url(self, url):
         """
         Add url to frontier.
@@ -185,9 +133,7 @@ class Frontier(object):
                 self.save[urlhash] = (url, False)
                 self.save.sync()
                 self.domains[domain].put(url)
-
-
-
+    
     def mark_url_complete(self, url):
         """
         Mark url as completed.
@@ -203,17 +149,6 @@ class Frontier(object):
 
             self.save[urlhash] = (url, True)
             self.save.sync()
-    
-    def register_domain(self, url):
-        """
-        Register domain of url with frontier.
-
-        Parameters:
-            url (str): url to register domain of
-        """
-        domain = urlparse(url).netloc
-        with self.lock:
-            self.last_request_time[domain] = time.time()
     
     def add_words(self, words: Counter):
         """
@@ -234,64 +169,117 @@ class Frontier(object):
         """
         with self.lock:
             self.subdomains.add(subdomain)
-
-def get_urls_from_sitemap(sitemap_url):
-    """
-    Get urls from sitemap.
-
-    Parameters:
-        sitemap_url (str): url of sitemap
-
-    Returns:
-        list: list of urls from sitemap
-    """
-    response = requests.get(sitemap_url)
-    if response.status_code != 200:
-        return []
     
-    try:
-        root = etree.fromstring(response.content)
-    except etree.XMLSyntaxError:
-        return []
+    def get_robots_txt_parser(self, url):
+        """
+        Get robots.txt parser for domain of url.
 
-    urls = []
+        Parameters:
+            url (str): url to get robots.txt parser for
+        
+        Returns:
+            RobotFileParser: robots.txt parser for domain of url
+        """
+        domain = urlparse(url).netloc
+        if domain not in self.robots_parsers:
+            self.robots_parsers[domain] = self.download_robots_txt_parser_for_domain(domain)
+        return self.robots_parsers[domain]
 
-    # Check if it's a sitemap index
-    is_sitemap_index = False
-    for sitemap_index in root.findall("sitemap", root.nsmap):
-        is_sitemap_index = True
-        loc_element = sitemap_index.find("loc", root.nsmap)
-        if loc_element is not None:
-            sitemap_urls = get_urls_from_sitemap(loc_element.text)
-            urls.extend(sitemap_urls)
+    def download_robots_txt_parser_for_domain(self, domain):
+        """
+        Get robots.txt parser for domain.
 
-    # If it's not a sitemap index, it's a regular sitemap
-    if not is_sitemap_index:
-        for url_element in root.findall("url", root.nsmap):
-            loc_element = url_element.find("loc", root.nsmap)
+        Parameters:
+            domain (str): domain to get robots.txt parser for
+            config (Config): A Config object containing the crawler configuration.
+
+        Returns:
+            RobotFileParser: robots.txt parser for domain
+        """
+        robots_url = urljoin(f"https://{domain}", "robots.txt")
+        resp = download(robots_url, self.config)
+
+        parser = RobotFileParser()
+        if resp.status == 200 and resp.raw_response is not None:
+            robots_txt_content = resp.raw_response.decode()
+            parser.parse(StringIO(robots_txt_content).readlines())
+        else:
+            print(f"Error getting robots.txt from {domain}")
+
+        return parser
+
+    def get_sitemap_urls_from_robots_txt(self, url):
+        """
+        Get sitemap urls from robots.txt for domain of url.
+
+        Parameters:
+            url (str): url to get sitemap urls for
+        
+        Returns:
+            list: list of sitemap urls
+        """
+        domain = urlparse(url).netloc
+        if domain in self.sitemaps:
+            parser = self.sitemaps[domain]
+        else:
+         parser = self.get_robots_txt_parser(url)
+        sitemap_urls = []
+
+        for link in parser.sitemaps:
+            sitemap_urls.append(link)
+
+        return sitemap_urls
+    
+    def process_sitemaps(self, sitemap_urls):
+        """
+        Process a list of sitemap urls.
+
+        Parameters:
+            sitemap_urls (list): list of sitemap urls
+        """
+        for sitemap_url in sitemap_urls:
+            domain = urlparse(sitemap_url).netloc
+            if sitemap_url not in self.sitemaps[domain]:
+                self.sitemaps[domain].add(sitemap_url)
+                urls_from_sitemap = self.get_urls_from_sitemap(sitemap_url)
+                for url in urls_from_sitemap:
+                    self.add_url(url)
+
+    def get_urls_from_sitemap(self, sitemap_url):
+        """
+        Get urls from sitemap.
+
+        Parameters:
+            sitemap_url (str): url of sitemap
+        Returns:
+            list: list of urls from sitemap
+        """
+        resp = download(sitemap_url, self.config)
+
+        if resp.status != 200:
+            return []
+
+        try:
+            root = etree.fromstring(resp.raw_response)
+        except etree.XMLSyntaxError:
+            return []
+
+        urls = []
+
+        # Check if it's a sitemap index
+        is_sitemap_index = False
+        for sitemap_index in root.findall("sitemap", root.nsmap):
+            is_sitemap_index = True
+            loc_element = sitemap_index.find("loc", root.nsmap)
             if loc_element is not None:
-                urls.append(loc_element.text)
+                sitemap_urls = self.get_urls_from_sitemap(loc_element.text)
+                urls.extend(sitemap_urls)
 
-    return urls
+        # If it's not a sitemap index, it's a regular sitemap
+        if not is_sitemap_index:
+            for url_element in root.findall("url", root.nsmap):
+                loc_element = url_element.find("loc", root.nsmap)
+                if loc_element is not None:
+                    urls.append(loc_element.text)
 
-
-
-def get_robots_txt_parser_for_domain(domain):
-    """
-    Get robots.txt parser for domain.
-
-    Parameters:
-        domain (str): domain to get robots.txt parser for
-
-    Returns:
-        RobotFileParser: robots.txt parser for domain
-    """
-    robots_url = urljoin(f"https://{domain}", "robots.txt")
-    parser = RobotFileParser()
-    parser.set_url(robots_url)
-    parser.read()
-    return parser
-
-
-if __name__ == '__main__':
-    pass
+        return urls
