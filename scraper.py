@@ -1,18 +1,37 @@
 import re
 from collections import Counter
-from urllib.parse import urlsplit, urljoin, urlparse
+from urllib.parse import urljoin, urlparse
 from nltk.corpus import stopwords
+from datasketch import MinHash
 from bs4 import BeautifulSoup
 
+MAX_CONTENT_LENGTH = 10000000 # 10MB
 
+def scraper(url, resp):
+    """
+    Scrapes the given URL and returns a list of links and a dictionary of words
 
-def scraper(url, resp, robots_rules):
-    links = extract_next_links(url, resp)
-    words = None
-    subdomain = None
-    if resp.status != 200:
-        return [], words, subdomain
+    Parameters:
+        url (str): url to scrape
+        resp (Response): response from downloading url
     
+    Returns:
+        tuple: tuple containing:
+            list: list of links
+            dict: Counter of words
+    """
+    words = None
+    links = []
+    m = None
+
+    # Check if content length is too large
+    content_length = resp.raw_response.headers.get('Content-Length')
+    if content_length and int(content_length) > MAX_CONTENT_LENGTH:
+        return (links, words, m)
+    
+    # Extract links and words from the response
+    links = extract_next_links(url, resp)
+
     content_type = resp.raw_response.headers.get('Content-Type', '').lower()
     if "text/html" in content_type:
         # Extract text content from HTML
@@ -20,19 +39,47 @@ def scraper(url, resp, robots_rules):
         text = soup.get_text()
 
         # Count words in the text
-        words = count_words(text)
+        words, m = count_words(text)
 
-    return ([link for link in links if is_valid(link)], words)
+    return ([link for link in links if is_valid(link)], words, m)
 
 def count_words(text):
+    """
+    Counts the number of times each word appears in the given text
+    and computes the minhash for the text
+
+    Parameters:
+        text (str): text to count words from
+    
+    Returns:
+        tuple: tuple containing:
+            dict: Counter of words
+            MinHash: MinHash of words
+    """
     stop_words = set(stopwords.words('english'))
     words = re.findall(r'\b\w+\b', text.lower())
     words = [word for word in words if word not in stop_words]
-    return Counter(words)
+
+    # Compute word count and minhash for the text
+    word_counter = Counter(words)
+    m = MinHash(num_perm=128)
+    for word, count in word_counter.items():
+        m.update(word.encode('utf8'))
+    return word_counter, m
 
 
 def extract_next_links(url, resp):
-    if resp.status != 200 or not resp.raw_response:
+    """
+    Extract links from the given URL.
+
+    Parameters:
+        url (str): url to extract links from
+        resp (Response): response from downloading url
+    
+    Returns:
+        list: list of links
+    """
+    if not resp.raw_response:
         return []
 
     soup = BeautifulSoup(resp.raw_response.content, "html.parser")
@@ -64,7 +111,8 @@ def is_valid(url):
     ]
 
     try:
-        parsed = urlparse(url)
+
+        parsed = urlparse(url)._replace(fragment='')
         if not parsed.scheme or not parsed.hostname:
             return False
 
@@ -91,4 +139,8 @@ if __name__ == "__main__":
     print(is_valid("http://www.ics.uci.edu"))
     print(is_valid("http://www.cs.uci.edu"))
     print(is_valid("http://www.informatics.uci.edu"))
-    print(is_valid("http://www.stat.uci.edu"))
+    print(is_valid("http://www.stat.uci.edu/?page_id=352#fragment"))
+    print(is_valid("http://www.test.ics.uci.edu/ex.html#fake"))
+    print(is_valid("http://www.anything.cs.uci.edu/"))
+    print(is_valid("http://www.what.informatics.uci.edu"))
+    print(is_valid("http://www.help.stat.uci.edu/"))

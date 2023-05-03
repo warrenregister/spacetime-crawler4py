@@ -1,6 +1,5 @@
 import os
 import shelve
-import threading
 import time
 from collections import Counter, defaultdict
 from queue import Empty, Queue
@@ -8,14 +7,14 @@ from threading import RLock
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 from io import StringIO
-import requests
 from lxml import etree
 
 from scraper import is_valid
 from utils.download import download
 from utils import get_logger, get_urlhash, normalize
+from datasketch import MinHashLSH
 
-
+# Remember to not visit the cache website yet
 class Frontier(object):
     """
     Frontier class for frontier set and frontier queue.
@@ -44,12 +43,16 @@ class Frontier(object):
         self.domains = defaultdict(Queue)
         self.last_request_time = {}
         self.lock = RLock()
+        self.robots_parsers_lock = RLock()
+        self.lsh_lock = Rlock()
+        self.sitemaps_lock = RLock()
         self.logger = get_logger("FRONTIER")
         self.config = config
         self.word_count = Counter()
         self.subdomains = set()
         self.robots_parsers = {}
         self.sitemaps = defaultdict(set)
+        self.lsh = MinHashLSH(threshold=0.5, num_perm=128)
 
 
         if not os.path.exists(self.config.save_file + '.db') and not restart:
@@ -115,7 +118,7 @@ class Frontier(object):
 
                 time.sleep(self.politeness_delay)
     
-    def add_url(self, url):
+    def add_url(self, urlh):
         """
         Add url to frontier.
 
@@ -124,16 +127,49 @@ class Frontier(object):
         """
         url = normalize(url)
         domain = urlparse(url).netloc
-        parser = self.get_robots_txt_parser(url)
-        if not parser.can_fetch(self.config.user_agent, url): 
-            return
+
+        with self.lock and self.robots_parsers_lock:
+            # Check if the domain is new and fetch robots.txt and process sitemaps
+            if domain not in self.subdomains:
+                parser = self.get_robots_txt_parser(url)
+                self.robots_parsers[domain] = parser
+                sitemap_urls = self.get_sitemap_urls_from_robots_txt(url)
+                self.process_sitemaps(sitemap_urls)
+
+                # Add the new domain to subdomains set
+                self.subdomains.add(domain)
+            else:
+                parser = self.robots_parsers[domain]
+
+            if not parser.can_fetch(self.config.user_agent, url): 
+                return
+
         urlhash = get_urlhash(url)
+
+        # Check if url is too similar to others in frontier
         with self.lock:
             if urlhash not in self.save:
                 self.save[urlhash] = (url, False)
                 self.save.sync()
                 self.domains[domain].put(url)
     
+    def is_similar(self, minhash):
+        """
+        Check if url is too similar to others in frontier.
+
+        Parameters:
+            minhash (int): simhash value for the url's content
+        
+        Returns:
+            bool: whether url is too similar to others in frontier
+        """
+        with self.lsh_lock:
+            similarity = self.lsh.is_similar(minhash)
+            if similarity is True:
+                return True
+            self.lsh.insert(minhash)
+            return False
+
     def mark_url_complete(self, url):
         """
         Mark url as completed.
@@ -160,16 +196,6 @@ class Frontier(object):
         with self.lock:
             self.word_count += words
     
-    def add_subdomain(self, subdomain: str):
-        """
-        Add subdomain to subdomains.
-
-        Parameters:
-            subdomain (str): subdomain to add
-        """
-        with self.lock:
-            self.subdomains.add(subdomain)
-    
     def get_robots_txt_parser(self, url):
         """
         Get robots.txt parser for domain of url.
@@ -180,11 +206,13 @@ class Frontier(object):
         Returns:
             RobotFileParser: robots.txt parser for domain of url
         """
+        url = normalize(url)
         domain = urlparse(url).netloc
-        if domain not in self.robots_parsers:
-            self.robots_parsers[domain] = self.download_robots_txt_parser_for_domain(domain)
-        return self.robots_parsers[domain]
-
+        with self.robots_parsers_lock:
+            if domain not in self.robots_parsers:
+                self.robots_parsers[domain] = self.download_robots_txt_parser_for_domain(domain)
+            return self.robots_parsers[domain]
+    
     def download_robots_txt_parser_for_domain(self, domain):
         """
         Get robots.txt parser for domain.
@@ -197,14 +225,17 @@ class Frontier(object):
             RobotFileParser: robots.txt parser for domain
         """
         robots_url = urljoin(f"https://{domain}", "robots.txt")
+        self.add_url(robots_url)
         resp = download(robots_url, self.config)
+
 
         parser = RobotFileParser()
         if resp.status == 200 and resp.raw_response is not None:
             robots_txt_content = resp.raw_response.decode()
             parser.parse(StringIO(robots_txt_content).readlines())
         else:
-            print(f"Error getting robots.txt from {domain}")
+            # convert print to logger
+            self.logging.error(f"Error getting robots.txt from {domain}")
 
         return parser
 
@@ -219,10 +250,11 @@ class Frontier(object):
             list: list of sitemap urls
         """
         domain = urlparse(url).netloc
-        if domain in self.sitemaps:
-            parser = self.sitemaps[domain]
-        else:
-         parser = self.get_robots_txt_parser(url)
+        with self.sitemaps_lock:
+            if domain in self.sitemaps:
+                parser = self.sitemaps[domain]
+            else:
+                parser = self.get_robots_txt_parser(url)
         sitemap_urls = []
 
         for link in parser.sitemaps:
@@ -239,11 +271,12 @@ class Frontier(object):
         """
         for sitemap_url in sitemap_urls:
             domain = urlparse(sitemap_url).netloc
-            if sitemap_url not in self.sitemaps[domain]:
-                self.sitemaps[domain].add(sitemap_url)
-                urls_from_sitemap = self.get_urls_from_sitemap(sitemap_url)
-                for url in urls_from_sitemap:
-                    self.add_url(url)
+            with self.sitemaps_lock:
+                if sitemap_url not in self.sitemaps[domain]:
+                    self.sitemaps[domain].add(sitemap_url)
+                    urls_from_sitemap = self.get_urls_from_sitemap(sitemap_url)
+            for url in urls_from_sitemap:
+                self.add_url(url)
 
     def get_urls_from_sitemap(self, sitemap_url):
         """

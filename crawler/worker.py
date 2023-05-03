@@ -45,13 +45,32 @@ class Worker(Thread):
                 self.logger.info("Frontier is empty. Stopping Crawler.")
                 break
             resp = download(tbd_url, self.config, self.logger)
+
+            # check if resp is a redirect or error
+            if 300 <= resp.status <= 399:
+                self.logger.info(f"Skipping {tbd_url}, status <{resp.status}>.")
+                redirect_url = resp.raw_response.headers.get('Location')
+                if redirect_url:
+                    self.logger.info(f"Redirected {tbd_url} to {redirect_url}.")
+                    self.frontier.add_url(redirect_url)
+                self.frontier.mark_url_complete(tbd_url)
+                continue
+            elif resp.status != 200:
+                self.logger.info(f"Skipping {tbd_url}, status <{resp.status}>.")
+                self.frontier.mark_url_complete(tbd_url)
+                continue
+
+            # scrape the resp
             self.logger.info(
                 f"Downloaded {tbd_url}, status <{resp.status}>, "
                 f"using cache {self.config.cache_server}.")
-            scraped_urls, words, subdomain = scraper.scraper(tbd_url, resp)
-            self.frontier.add_words(words)
-            self.frontier.add_subdomain(subdomain)
-            for scraped_url in scraped_urls:
-                self.frontier.add_url(scraped_url)
+            scraped_urls, words, minhash = scraper.scraper(tbd_url, resp)
+            if minhash is not None:
+                similar = self.frontier.is_similar(minhash)
+            # add scraped urls to frontier
+            if words is not None and not similar:
+                self.frontier.add_words(words)
+
+                for scraped_url in scraped_urls:
+                    self.frontier.add_url(scraped_url, minhash)
             self.frontier.mark_url_complete(tbd_url)
-            time.sleep(self.config.time_delay)
