@@ -28,15 +28,12 @@ def scraper(url, resp):
     content_length = resp.raw_response.headers.get('Content-Length')
     if content_length and int(content_length) > MAX_CONTENT_LENGTH:
         return (links, words, m)
-    
-    # Extract links and words from the response
-    links = extract_next_links(url, resp)
 
     content_type = resp.raw_response.headers.get('Content-Type', '').lower()
     if "text/html" in content_type:
         # Extract text content from HTML
-        soup = BeautifulSoup(resp.raw_response.content, 'html.parser')
-        text = soup.get_text()
+        # Extract links and words from the response
+        links, text = extract_text_and_next_links(url, resp)
 
         # Count words in the text
         words, m = count_words(text)
@@ -62,15 +59,15 @@ def count_words(text):
 
     # Compute word count and minhash for the text
     word_counter = Counter(words)
-    m = MinHash(num_perm=128)
+    m = MinHash(num_perm=90)
     for word, count in word_counter.items():
         m.update(word.encode('utf8'))
     return word_counter, m
 
 
-def extract_next_links(url, resp):
+def extract_text_and_next_links(url, resp):
     """
-    Extract links from the given URL.
+    Extract links from the given URL and the text.
 
     Parameters:
         url (str): url to extract links from
@@ -91,7 +88,7 @@ def extract_next_links(url, resp):
             full_url = urljoin(url, href)
             links.append(full_url)
 
-    return links
+    return links, soup.get_text()
 
 def is_valid(url):
     """

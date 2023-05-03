@@ -41,9 +41,10 @@ class Worker(Thread):
         """
         while True:
             tbd_url = self.frontier.get_tbd_url()
-            if not tbd_url:
+            if tbd_url is None:
                 self.logger.info("Frontier is empty. Stopping Crawler.")
                 break
+
             resp = download(tbd_url, self.config, self.logger)
 
             # check if resp is a redirect or error
@@ -64,13 +65,23 @@ class Worker(Thread):
             self.logger.info(
                 f"Downloaded {tbd_url}, status <{resp.status}>, "
                 f"using cache {self.config.cache_server}.")
-            scraped_urls, words, minhash = scraper.scraper(tbd_url, resp)
+            
+            try:
+                scraped_urls, words, minhash = scraper.scraper(tbd_url, resp)
+            except Exception as e:
+                self.logger.error(f"Error while scraping {tbd_url}: {str(e)}")
+                self.frontier.mark_url_complete(tbd_url)
+                continue
+
+            similar = False
             if minhash is not None:
                 similar = self.frontier.is_similar(minhash)
-            # add scraped urls to frontier
+            
+            # add scraped words to frontier
             if words is not None and not similar:
                 self.frontier.add_words(words)
-
+            
+            if not similar:
                 for scraped_url in scraped_urls:
                     self.frontier.add_url(scraped_url, minhash)
             self.frontier.mark_url_complete(tbd_url)
