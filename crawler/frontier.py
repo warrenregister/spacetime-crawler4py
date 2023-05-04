@@ -52,6 +52,8 @@ class Frontier(object):
         self.sitemaps = defaultdict(set) # dict of sitemaps for each domain
         self.simhash_index = SimhashIndex([], k=3)
         self.max_words = (None, 0)
+        self.save_interval = 100  # Replace n with the desired interval
+        self.links_processed = 0
 
         self.handle_shelves(restart)
 
@@ -87,6 +89,8 @@ class Frontier(object):
             str: next url to be downloaded
         """
         with self.lock:
+            self.links_processed += 1
+            self.maybe_save_data()
             while len(self.domains_to_scrape) > 0:
                 for domain, url_queue in list(self.domains_to_scrape.items()):
                     last_request_time = self.last_request_time.get(domain, 0)
@@ -100,6 +104,9 @@ class Frontier(object):
                         except Empty:
                             del self.domains_to_scrape[domain]
                 time.sleep(self.politeness_delay)
+            
+            self.save_data()
+            return None
     
     def add_url(self, url, scraped=False):
         """
@@ -368,7 +375,17 @@ class Frontier(object):
                 self.load_data()
         
         self.save = shelve.open(self.config.save_file)
+        self.save_data()
     
+    def maybe_save_data(self):
+        """
+        Save data if the number of processed links has reached the save_interval threshold.
+        """
+        self.links_processed += 1
+        if self.links_processed % self.save_interval == 0:
+            self.logger.info(f"Saving data after processing {self.links_processed} links.")
+            self.save_data()
+        
     def save_data(self):
         """
         Save data structures to disk.
