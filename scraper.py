@@ -3,6 +3,7 @@ from collections import Counter
 from urllib.parse import urljoin, urlparse
 from nltk.corpus import stopwords
 from bs4 import BeautifulSoup
+from simhash import Simhash
 
 MAX_CONTENT_LENGTH = 10000000 # 10MB
 
@@ -98,11 +99,12 @@ def is_valid(url):
         bool: True if the URL is valid, False otherwise.
     """
     allowed_domains = [
-        r"^.+\.ics\.uci\.edu(/.*)?$",
-        r"^.+\.cs\.uci\.edu(/.*)?$",
-        r"^.+\.informatics\.uci\.edu(/.*)?$",
-        r"^.+\.stat\.uci\.edu(/.*)?$"
+        r"^https?://([a-zA-Z0-9.-]*\.)?ics\.uci\.edu(:[0-9]+)?(/[a-zA-Z0-9_\-./;?%&=+#]*)?$",
+        r"^https?://([a-zA-Z0-9.-]*\.)?cs\.uci\.edu(:[0-9]+)?(/[a-zA-Z0-9_\-./;?%&=+#]*)?$",
+        r"^https?://([a-zA-Z0-9.-]*\.)?informatics\.uci\.edu(:[0-9]+)?(/[a-zA-Z0-9_\-./;?%&=+#]*)?$",
+        r"^https?://([a-zA-Z0-9.-]*\.)?stat\.uci\.edu(:[0-9]+)?(/[a-zA-Z0-9_\-./;?%&=+#]*)?$"
     ]
+
 
     try:
 
