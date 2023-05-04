@@ -12,8 +12,7 @@ from lxml import etree
 from scraper import is_valid
 from utils.download import download
 from utils import get_logger, get_urlhash, normalize
-from datasketch import MinHashLSH
-
+from simhash import SimhashIndex
 # Remember to not visit the cache website yet
 class Frontier(object):
     """
@@ -38,32 +37,24 @@ class Frontier(object):
             config (Config): configuration instance
             restart (bool): whether to restart from seed
         """
-        self.politeness_delay = config.politeness_delay
+        self.politeness_delay = config.time_delay
         self.domains_to_scrape = defaultdict(Queue) # frontier queue for each domain
         self.last_request_time = {} # time of last request to each domain
         self.lock = RLock() # general lock for all other shared resources
         self.robots_parsers_lock = RLock() # lock for robots_parsers
-        self.lsh_lock = RLock() # lock for lsh
+        self.shi_lock = RLock() # lock for simhash index
         self.sitemaps_lock = RLock() # lock for sitemaps
         self.logger = get_logger("FRONTIER")
         self.config = config
         self.word_count = Counter() # word count for frontier set
-        self.subdomains = set() # set of subdomains
+        self.subdomains = {} # dict of subdomains and unique urls
         self.robots_parsers = {} # dict of robots parsers for each domain
         self.sitemaps = defaultdict(set) # dict of sitemaps for each domain
-        self.lsh = MinHashLSH(threshold=0.6, num_perm=90)
+        self.simhash_index = SimhashIndex([], k=3)
+        self.max_words = (None, 0)
 
+        self.handle_shelves(restart)
 
-        if not os.path.exists(self.config.save_file + '.db') and not restart:
-            self.logger.info(
-                f"Did not find save file {self.config.save_file}, "
-                f"starting from seed.")
-        elif os.path.exists(self.config.save_file + '.db') and restart:
-            self.logger.info(
-                f"Found save file {self.config.save_file}, deleting it.")
-            os.remove('' + self.config.save_file + '.db')
-
-        self.save = shelve.open(self.config.save_file)
         if restart:
             for url in self.config.seed_urls:
                 self.add_url(url)
@@ -119,46 +110,63 @@ class Frontier(object):
             scraped (bool): whether url has been scraped
         """
         url = normalize(url)
-        domain = urlparse(url).netloc
+
+        parsed_url = urlparse(url)
+        domain = parsed_url.netloc
+        fragmentless_url = parsed_url._replace(fragment="").geturl()
+        urlhash = get_urlhash(url)
+
 
         with self.lock and self.robots_parsers_lock:
+            # Check if the url is already in the frontier
+            if urlhash in self.save:
+                self.logger.info(f"URL {url} already in frontier.")
+                return
             # Check if the domain is new -> fetch robots.txt and process sitemaps
-            if domain not in self.subdomains:
+            if domain not in self.robots_parsers.keys():
                 parser = self.get_robots_txt_parser(url)
                 self.robots_parsers[domain] = parser
-                sitemap_urls = self.get_sitemap_urls_from_robots_txt(url)
-                self.process_sitemaps(sitemap_urls)
-
-                # Add the new domain to subdomains set
-                self.subdomains.add(domain)
+                self.get_sitemap_urls_from_robots_txt(url)  
             else:
                 parser = self.robots_parsers[domain]
+            
+            # add url to subdomains
+            if parsed_url.hostname not in self.subdomains.keys():
+                self.subdomains[parsed_url.hostname] = set()
+            self.subdomains[parsed_url.hostname].add(fragmentless_url)
 
+            # Check if the url is allowed by robots.txt
             if not parser.can_fetch(self.config.user_agent, url): 
                 return
 
-            urlhash = get_urlhash(url)
-            if urlhash not in self.save:
-                self.save[urlhash] = (url, scraped)
-                self.save.sync()
-                self.domains_to_scrape[domain].put(url)
+            self.save[urlhash] = (fragmentless_url, scraped)
+            self.save.sync()
+            self.domains_to_scrape[domain].put(url)
 
-    def is_similar(self, minhash):
+    def is_similar(self, key, simhash):
         """
-        Check if url is too similar to others in frontier.
+        Checks if the given simhash is similar to any already seen simhashes.
 
         Parameters:
-            minhash (int): simhash value for the url's content
-        
+            simhash (Simhash): Simhash to compare
         Returns:
-            bool: whether url is too similar to others in frontier
+            bool: True if similar, False otherwise
         """
-        with self.lsh_lock:
-            similarity = self.lsh.is_similar(minhash)
-            if similarity is True:
-                return True
-            self.lsh.insert(minhash)
-        return False
+        with self.shi_lock:
+            similar =  bool(self.simhash_index.get_near_dups(simhash))
+            if similar is True:
+                self.add_simhash(key, simhash)
+            return similar
+    
+    def add_simhash(self, key, simhash):
+        """
+        Add simhash to simhash index.
+
+        Parameters:
+            simhash (Simhash): Simhash to add
+        """
+        with self.shi_lock:
+            self.simhash_index.add(key, simhash)
 
     def mark_url_complete(self, url):
         """
@@ -176,15 +184,27 @@ class Frontier(object):
             self.save[urlhash] = (url, True)
             self.save.sync()
     
-    def add_words(self, words: Counter):
+    def add_words(self, words: Counter, url: str):
         """
-        Add words to word count.
+        Add words to word count and update max words if necessary.
 
         Parameters:
             words (Counter): words to add to word count
         """
         with self.lock:
+            self._update_max_words(sum(words.values()), url)
             self.word_count += words
+    
+    def _update_max_words(self, count, url):
+        """
+        Update max words for frontier set.
+
+        Parameters:
+            url (str): url to add to frontier set
+        """
+        with self.lock:
+            if count > self.max_words[1]:
+                self.max_words = (url, count)
     
     def get_robots_txt_parser(self, url):
         """
@@ -215,7 +235,12 @@ class Frontier(object):
             RobotFileParser: robots.txt parser for domain
         """
         robots_url = urljoin(f"https://{domain}", "robots.txt")
-        self.add_url(robots_url, scraped=True)
+        with self.lock:
+            urlhash = get_urlhash(robots_url)
+            if urlhash not in self.save:
+                self.save[urlhash] = (robots_url, True)
+                self.save.sync()
+
         resp = download(robots_url, self.config)
 
 
@@ -247,8 +272,9 @@ class Frontier(object):
             
             sitemap_urls = []
             for link in parser.sitemaps:
-                self.sitemaps[domain].add(link)
                 sitemap_urls.append(link)
+        
+        self.process_sitemaps(sitemap_urls)
 
         return sitemap_urls
     
@@ -290,21 +316,85 @@ class Frontier(object):
             return []
 
         urls = []
-
+        namespace = root.tag.split('}')[0] + '}'
         # Check if it's a sitemap index
         is_sitemap_index = False
-        for sitemap_index in root.findall("sitemap", root.nsmap):
+        for sitemap_index in root.findall(namespace + "sitemap"):
             is_sitemap_index = True
-            loc_element = sitemap_index.find("loc", root.nsmap)
+            loc_element = sitemap_index.find(namespace + "loc")
             if loc_element is not None:
                 sitemap_urls = self.get_urls_from_sitemap(loc_element.text)
                 urls.extend(sitemap_urls)
 
         # If it's not a sitemap index, it's a regular sitemap
         if not is_sitemap_index:
-            for url_element in root.findall("url", root.nsmap):
-                loc_element = url_element.find("loc", root.nsmap)
+            for url_element in root.findall(namespace + "url"):
+                loc_element = url_element.find(namespace + "loc")
                 if loc_element is not None:
                     urls.append(loc_element.text)
 
         return urls
+    
+    def handle_shelves(self, restart):
+        """
+        Handle shelves, delete them if restarting, create them if not restarting.
+
+        Parameters:
+            restart (bool): whether or not to restart
+        """
+        if restart:
+            if os.path.exists(self.config.save_file + '.db'):
+                self.logger.info(
+                    f"Found save file {self.config.save_file}, deleting it.")
+                os.remove('' + self.config.save_file + '.db')
+            
+            if os.path.exists(self.config.save_file + '_data' + '.db'):
+                self.logger.info(
+                    f"Found data save file {self.config.save_file + '_data'}, deleting it.")
+                os.remove('' + self.config.save_file + '_data' + '.db')
+
+        else:
+            if not os.path.exists(self.config.save_file + '.db'):
+                self.logger.info(
+                    f"Did not find save file {self.config.save_file}, "
+                    f"starting from seed.")
+       
+        
+            if not os.path.exists(self.config.save_file + '_data' + '.db'):
+                self.logger.info(
+                    f"Did not find data save file {self.config.save_file + '_data'}, "
+                    f"starting fresh.")
+            else:
+                self.load_data()
+        
+        self.save = shelve.open(self.config.save_file)
+    
+    def save_data(self):
+        """
+        Save data structures to disk.
+        """
+        with self.lock:
+            with shelve.open(self.config.save_file + '_data') as data_file:
+                data_file['subdomains'] = self.subdomains
+                data_file['word_count'] = self.word_count
+                data_file['max_words'] = self.max_words
+    
+    def load_data(self):
+        """
+        Load data structures from disk.
+        """
+        with self.lock:
+            with shelve.open(self.config.save_file + '_data') as data_file:
+                self.subdomains = data_file['subdomains']
+                self.word_count = data_file['word_count']
+                self.max_words = data_file['max_words']
+
+
+    def __del__(self):
+        """
+        Destructor for Frontier class.
+        """
+        self.save.close()
+        self.save_data()
+
+

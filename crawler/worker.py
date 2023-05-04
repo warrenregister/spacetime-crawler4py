@@ -61,27 +61,33 @@ class Worker(Thread):
                 self.frontier.mark_url_complete(tbd_url)
                 continue
 
+            # check if resp.raw_response is None
+            if resp.raw_response is None:
+                self.logger.info(f"Skipping {tbd_url}, empty raw_response.")
+                self.frontier.mark_url_complete(tbd_url)
+                continue
+
             # scrape the resp
             self.logger.info(
                 f"Downloaded {tbd_url}, status <{resp.status}>, "
                 f"using cache {self.config.cache_server}.")
             
             try:
-                scraped_urls, words, minhash = scraper.scraper(tbd_url, resp)
+                scraped_urls, words, simhash = scraper.scraper(tbd_url, resp)
             except Exception as e:
                 self.logger.error(f"Error while scraping {tbd_url}: {str(e)}")
                 self.frontier.mark_url_complete(tbd_url)
                 continue
 
             similar = False
-            if minhash is not None:
-                similar = self.frontier.is_similar(minhash)
+            if simhash is not None:
+                similar = self.frontier.is_similar(tbd_url, simhash)
             
             # add scraped words to frontier
             if words is not None and not similar:
-                self.frontier.add_words(words)
+                self.frontier.add_words(words, tbd_url)
             
             if not similar:
                 for scraped_url in scraped_urls:
-                    self.frontier.add_url(scraped_url, minhash)
+                    self.frontier.add_url(scraped_url)
             self.frontier.mark_url_complete(tbd_url)

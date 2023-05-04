@@ -2,7 +2,6 @@ import re
 from collections import Counter
 from urllib.parse import urljoin, urlparse
 from nltk.corpus import stopwords
-from datasketch import MinHash
 from bs4 import BeautifulSoup
 
 MAX_CONTENT_LENGTH = 10000000 # 10MB
@@ -43,7 +42,7 @@ def scraper(url, resp):
 def count_words(text):
     """
     Counts the number of times each word appears in the given text
-    and computes the minhash for the text
+    and computes the simhash for the text
 
     Parameters:
         text (str): text to count words from
@@ -51,18 +50,16 @@ def count_words(text):
     Returns:
         tuple: tuple containing:
             dict: Counter of words
-            MinHash: MinHash of words
+            Simhash: Simhash of words
     """
     stop_words = set(stopwords.words('english'))
     words = re.findall(r'\b\w+\b', text.lower())
     words = [word for word in words if word not in stop_words]
 
-    # Compute word count and minhash for the text
+    # Compute word count and simhash for the text
     word_counter = Counter(words)
-    m = MinHash(num_perm=90)
-    for word, count in word_counter.items():
-        m.update(word.encode('utf8'))
-    return word_counter, m
+    s = Simhash(word_counter)
+    return word_counter, s
 
 
 def extract_text_and_next_links(url, resp):
