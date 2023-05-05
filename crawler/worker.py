@@ -44,7 +44,12 @@ class Worker(Thread):
                 self.logger.info("Frontier is empty. Stopping Crawler.")
                 break
 
-            resp = download(tbd_url, self.config, self.logger)
+            try:
+                resp = download(tbd_url, self.config, self.logger)
+            except Exception as e:
+                self.logger.error(f"Error while downloading {tbd_url}: {str(e)}")
+                self.frontier.mark_url_complete(tbd_url)
+                continue
 
             # check if resp is a redirect or error
             if 300 <= resp.status <= 399:
@@ -81,6 +86,8 @@ class Worker(Thread):
             similar = False
             if simhash is not None:
                 similar = self.frontier.is_similar(tbd_url, simhash)
+            if similar:
+                self.logger.info(f"Skipping {tbd_url}, similar content.")
             
             # add scraped words to frontier
             if words is not None and not similar:

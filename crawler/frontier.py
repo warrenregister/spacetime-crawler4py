@@ -12,6 +12,7 @@ from scraper import is_valid
 from utils.download import download
 from utils import get_logger, get_urlhash, normalize
 from simhash import SimhashIndex
+from shutil import copy
 
 # Remember to not visit the cache website yet
 class Frontier(object):
@@ -46,14 +47,11 @@ class Frontier(object):
         self.sitemaps_lock = RLock() # lock for sitemaps
         self.logger = get_logger("FRONTIER")
         self.config = config
-        self.word_count = Counter() # word count for frontier set
-        self.subdomains = {} # dict of subdomains and unique urls
-        self.robots_parsers = {} # dict of robots parsers for each domain
-        self.sitemaps = defaultdict(set) # dict of sitemaps for each domain
         self.simhash_index = SimhashIndex([], k=3)
-        self.max_words = (None, 0)
-        self.save_interval = 100  # Replace n with the desired interval
         self.links_processed = 0
+        self.backup_interval = 1200  # Backup interval in seconds (e.g., 1200 seconds = 20 minutes)
+        self.backup_folder = 'backups'  # Folder to store backups
+        self.last_backup_time = time.time()  # Initialize last backup time
 
         self.handle_shelves(restart)
 
@@ -75,7 +73,8 @@ class Frontier(object):
             tbd_count = 0
             for url, completed in self.save.values():
                 if not completed and is_valid(url):
-                    self.add_url(url)
+                    domain = urlparse(url).hostname
+                    self.domains_to_scrape[domain].put(url)
                     tbd_count += 1
             self.logger.info(
                 f"Found {tbd_count} urls to be downloaded from {total_count} "
@@ -90,10 +89,13 @@ class Frontier(object):
         """
         with self.lock:
             self.links_processed += 1
-            self.maybe_save_data()
+            self.backup_shelve_files()
             while len(self.domains_to_scrape) > 0:
                 for domain, url_queue in list(self.domains_to_scrape.items()):
-                    last_request_time = self.last_request_time.get(domain, 0)
+                    if domain in self.last_request_time:
+                        last_request_time = self.last_request_time[domain]
+                    else:
+                        last_request_time = 0
                     time_since_last_request = time.time() - last_request_time
 
                     if time_since_last_request >= self.politeness_delay:
@@ -105,7 +107,6 @@ class Frontier(object):
                             del self.domains_to_scrape[domain]
                 time.sleep(self.politeness_delay)
             
-            self.save_data()
             return None
     
     def add_url(self, url, scraped=False):
@@ -132,7 +133,6 @@ class Frontier(object):
             # Check if the domain is new -> fetch robots.txt and process sitemaps
             if domain not in self.robots_parsers.keys():
                 parser = self.get_robots_txt_parser(url)
-                self.robots_parsers[domain] = parser
                 self.get_sitemap_urls_from_robots_txt(url)  
             else:
                 parser = self.robots_parsers[domain]
@@ -144,10 +144,14 @@ class Frontier(object):
 
             # Check if the url is allowed by robots.txt
             if not parser.can_fetch(self.config.user_agent, url): 
+                self.logger.info(f"URL {url} not allowed by robots.txt.")
                 return
 
             self.save[urlhash] = (fragmentless_url, scraped)
             self.save.sync()
+            self.save_data['subdomains'] = self.subdomains
+            self.save_data['robots_parsers'] = self.robots_parsers
+            self.save_data.sync()
             self.domains_to_scrape[domain].put(url)
 
     def is_similar(self, key, simhash):
@@ -201,6 +205,8 @@ class Frontier(object):
         with self.lock:
             self._update_max_words(sum(words.values()), url)
             self.word_count += words
+            self.save_data['word_count'] = self.word_count
+            self.save_data.sync()
     
     def _update_max_words(self, count, url):
         """
@@ -212,6 +218,8 @@ class Frontier(object):
         with self.lock:
             if count > self.max_words[1]:
                 self.max_words = (url, count)
+                self.save_data['max_words'] = self.max_words
+                self.save_data.sync()
     
     def get_robots_txt_parser(self, url):
         """
@@ -248,12 +256,21 @@ class Frontier(object):
                 self.save[urlhash] = (robots_url, True)
                 self.save.sync()
 
-        resp = download(robots_url, self.config)
+            self.last_request_time[domain] = time.time()
+        
+        try:
+            resp = download(robots_url, self.config, self.logger)
+        except Exception as e:
+            self.logger.error(f"Error getting robots.txt from {domain}: {e}")
+            return RobotFileParser()
+    
 
 
         parser = RobotFileParser()
-        if resp.status == 200 and resp.raw_response is not None:
-            robots_txt_content = resp.raw_response.decode()
+         # Check if the content type is text/plain
+        if resp.status == 200 and resp.raw_response is not None and \
+            resp.raw_response.headers.get('Content-Type', '').startswith('text/plain'):
+            robots_txt_content = resp.raw_response.content.decode("utf-8")
             parser.parse(StringIO(robots_txt_content).readlines())
         else:
             self.logger.error(f"Error getting robots.txt from {domain}")
@@ -295,11 +312,17 @@ class Frontier(object):
         for sitemap_url in sitemap_urls:
             domain = urlparse(sitemap_url).netloc
             with self.sitemaps_lock:
+                if domain not in self.sitemaps:
+                    self.sitemaps[domain] = set()
                 if sitemap_url not in self.sitemaps[domain]:
                     self.sitemaps[domain].add(sitemap_url)
+                    with self.lock:
+                        self.save_data['sitemaps'] = self.sitemaps
+                        self.save_data.sync()
                     urls_from_sitemap = self.get_urls_from_sitemap(sitemap_url)
                     for url in urls_from_sitemap:
                         self.add_url(url)
+                    
 
     def get_urls_from_sitemap(self, sitemap_url):
         """
@@ -310,14 +333,24 @@ class Frontier(object):
         Returns:
             list: list of urls from sitemap
         """
-        resp = download(sitemap_url, self.config)
+
+        if sitemap_url in self.last_request_time:
+            time_diff = time.time() - self.last_request_time[sitemap_url]
+            if time_diff < self.politeness_delay:
+                time.sleep(time_diff)
+        
+        try:
+            resp = download(sitemap_url, self.config, self.logger)
+        except Exception as e:
+            self.logger.error(f"Error downloading sitemap {sitemap_url}")
+            return []
 
         if resp.status != 200:
             self.logger.error(f"Error downloading sitemap {sitemap_url}")
             return []
 
         try:
-            root = etree.fromstring(resp.raw_response)
+            root = etree.fromstring(resp.raw_response.content)
         except etree.XMLSyntaxError:
             self.logger.error(f"Error parsing sitemap {sitemap_url}")
             return []
@@ -371,47 +404,62 @@ class Frontier(object):
                 self.logger.info(
                     f"Did not find data save file {self.config.save_file + '_data'}, "
                     f"starting fresh.")
-            else:
-                self.load_data()
         
-        self.save = shelve.open(self.config.save_file)
-        self.save_data()
-    
-    def maybe_save_data(self):
-        """
-        Save data if the number of processed links has reached the save_interval threshold.
-        """
-        self.links_processed += 1
-        if self.links_processed % self.save_interval == 0:
-            self.logger.info(f"Saving data after processing {self.links_processed} links.")
-            self.save_data()
-        
-    def save_data(self):
-        """
-        Save data structures to disk.
-        """
         with self.lock:
-            with shelve.open(self.config.save_file + '_data') as data_file:
-                data_file['subdomains'] = self.subdomains
-                data_file['word_count'] = self.word_count
-                data_file['max_words'] = self.max_words
-    
-    def load_data(self):
-        """
-        Load data structures from disk.
-        """
-        with self.lock:
-            with shelve.open(self.config.save_file + '_data') as data_file:
-                self.subdomains = data_file['subdomains']
-                self.word_count = data_file['word_count']
-                self.max_words = data_file['max_words']
+            self.save = shelve.open(self.config.save_file)
+            self.save_data = shelve.open(self.config.save_file + '_data')
+            try:
+                self.subdomains = self.save_data['subdomains']
+            except KeyError as e:
+                self.logger.error(f"Error loading subdomains from save_data file: {e}")
+                self.subdomains = {}
 
+            try:
+                self.word_count = self.save_data['word_count']
+            except KeyError as e:
+                self.logger.error(f"Error loading word_count from save_data file: {e}")
+                self.word_count = Counter()
+
+            try:
+                self.max_words = self.save_data['max_words']
+            except KeyError as e:
+                self.logger.error(f"Error loading max_words from save_data file: {e}")
+                self.max_words = (None, 0)
+
+            try:
+                self.robots_parsers = self.save_data['robots_parsers']
+            except KeyError as e:
+                self.logger.error(f"Error loading robots_parsers from save_data file: {e}")
+                self.robots_parsers = {}
+            try:
+                self.sitemaps = self.save_data['sitemaps']
+            except KeyError as e:
+                self.logger.error(f"Error loading sitemaps from save_data file: {e}")
+                self.sitemaps = defaultdict(set)
+            self.save_data.sync()
+            self.save.sync()
+    
+    def backup_shelve_files(self):
+        """
+        Backup shelve files.
+        """
+        current_time = time.time()
+        if current_time - self.last_backup_time > self.backup_interval:
+            backup_path = self.backup_folder
+            os.makedirs(backup_path, exist_ok=True)
+
+            for shelve_file in [self.save, self.save_data]:  # Assuming 'save' and 'queue' are your shelve file objects
+                file_path = shelve_file.name + ".db"  # Assuming '.dat' is the file extension for your shelve files
+                copy(file_path, os.path.join(backup_path, os.path.basename(file_path)))
+
+            self.last_backup_time = current_time
+            print(f"Backup created at {backup_path}")
 
     def __del__(self):
         """
         Destructor for Frontier class.
         """
         self.save.close()
-        self.save_data()
+        self.save_data.close()
 
 

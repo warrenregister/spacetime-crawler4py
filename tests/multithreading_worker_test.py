@@ -20,7 +20,6 @@ import time
 
 request_timestamps = {}
 
-
 class TestMultithreadingWorker(unittest.TestCase):
 
     def setUp(self, restart=True):

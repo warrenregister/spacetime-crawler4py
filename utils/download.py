@@ -3,6 +3,8 @@ import cbor
 import time
 
 from utils.response import Response
+import requests
+
 
 def download(url, config, logger=None):
     """
