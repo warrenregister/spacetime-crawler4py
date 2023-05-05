@@ -5,6 +5,8 @@ from utils.server_registration import get_cache_server
 from utils.config import Config
 from crawler import Crawler
 import nltk
+import multiprocessing
+
 
 
 def main(config_file, restart):
@@ -17,6 +19,8 @@ def main(config_file, restart):
 
 
 if __name__ == "__main__":
+    multiprocessing.set_start_method('fork')
+
     nltk.download('stopwords')
     parser = ArgumentParser()
     parser.add_argument("--restart", action="store_true", default=False)

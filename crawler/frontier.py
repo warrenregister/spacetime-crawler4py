@@ -8,11 +8,11 @@ from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 from io import StringIO
 from lxml import etree
-
 from scraper import is_valid
 from utils.download import download
 from utils import get_logger, get_urlhash, normalize
 from simhash import SimhashIndex
+
 # Remember to not visit the cache website yet
 class Frontier(object):
     """
@@ -20,7 +20,7 @@ class Frontier(object):
 
     Attributes:
         politeness_delay (float): delay between requests to same domain
-        domains (dict): dict of Queue for each domaincond
+        domains (dict): dict of Queue for each domain cond
         last_request_time (dict): time of last request to each domain
         lock (RLock): lock for thread safety
         logger (Logger): logger instance
