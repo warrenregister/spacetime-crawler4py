@@ -13,6 +13,7 @@ from utils.download import download
 from utils import get_logger, get_urlhash, normalize
 from simhash import SimhashIndex
 from shutil import copy
+import pickle
 
 # Remember to not visit the cache website yet
 class Frontier(object):
@@ -89,7 +90,7 @@ class Frontier(object):
         """
         with self.lock:
             self.links_processed += 1
-            self.backup_shelve_files()
+            self.pickle_fields()
             while len(self.domains_to_scrape) > 0:
                 for domain, url_queue in list(self.domains_to_scrape.items()):
                     if domain in self.last_request_time:
@@ -149,9 +150,6 @@ class Frontier(object):
 
             self.save[urlhash] = (fragmentless_url, scraped)
             self.save.sync()
-            self.save_data['subdomains'] = self.subdomains
-            self.save_data['robots_parsers'] = self.robots_parsers
-            self.save_data.sync()
             self.domains_to_scrape[domain].put(url)
 
     def is_similar(self, key, simhash):
@@ -205,8 +203,9 @@ class Frontier(object):
         with self.lock:
             self._update_max_words(sum(words.values()), url)
             self.word_count += words
-            self.save_data['word_count'] = self.word_count
-            self.save_data.sync()
+            # use pickle to save counter
+            with open('word_count.pkl', 'wb') as f:
+                pickle.dump(self.word_count, f)
     
     def _update_max_words(self, count, url):
         """
@@ -218,8 +217,9 @@ class Frontier(object):
         with self.lock:
             if count > self.max_words[1]:
                 self.max_words = (url, count)
-                self.save_data['max_words'] = self.max_words
-                self.save_data.sync()
+                # use pickle to save max words
+                with open('max_words.pkl', 'wb') as f:
+                    pickle.dump(self.max_words, f)
     
     def get_robots_txt_parser(self, url):
         """
@@ -317,8 +317,9 @@ class Frontier(object):
                 if sitemap_url not in self.sitemaps[domain]:
                     self.sitemaps[domain].add(sitemap_url)
                     with self.lock:
-                        self.save_data['sitemaps'] = self.sitemaps
-                        self.save_data.sync()
+                        # use pickle to save sitemaps
+                        with open('sitemaps.pkl', 'wb') as f:
+                            pickle.dump(self.sitemaps, f)
                     urls_from_sitemap = self.get_urls_from_sitemap(sitemap_url)
                     for url in urls_from_sitemap:
                         self.add_url(url)
@@ -387,79 +388,70 @@ class Frontier(object):
                 self.logger.info(
                     f"Found save file {self.config.save_file}, deleting it.")
                 os.remove('' + self.config.save_file + '.db')
-            
-            if os.path.exists(self.config.save_file + '_data' + '.db'):
-                self.logger.info(
-                    f"Found data save file {self.config.save_file + '_data'}, deleting it.")
-                os.remove('' + self.config.save_file + '_data' + '.db')
-
         else:
             if not os.path.exists(self.config.save_file + '.db'):
                 self.logger.info(
                     f"Did not find save file {self.config.save_file}, "
                     f"starting from seed.")
-       
-        
-            if not os.path.exists(self.config.save_file + '_data' + '.db'):
-                self.logger.info(
-                    f"Did not find data save file {self.config.save_file + '_data'}, "
-                    f"starting fresh.")
         
         with self.lock:
             self.save = shelve.open(self.config.save_file)
-            self.save_data = shelve.open(self.config.save_file + '_data')
-            try:
-                self.subdomains = self.save_data['subdomains']
-            except KeyError as e:
-                self.logger.error(f"Error loading subdomains from save_data file: {e}")
-                self.subdomains = {}
-
-            try:
-                self.word_count = self.save_data['word_count']
-            except KeyError as e:
-                self.logger.error(f"Error loading word_count from save_data file: {e}")
+            # check if pickle file exists, if so, load it,
+            if os.path.exists('subdomains.pkl'):
+                with open('subdomains.pkl', 'rb') as f:
+                        self.subdomains = pickle.load(f)
+            else:
+                self.subdomains = defaultdict(set)
+            
+            if os.path.exists('word_count.pkl'):
+                with open('word_count.pkl', 'rb') as f:
+                        self.word_count = pickle.load(f)
+            else:
                 self.word_count = Counter()
-
-            try:
-                self.max_words = self.save_data['max_words']
-            except KeyError as e:
-                self.logger.error(f"Error loading max_words from save_data file: {e}")
+            
+            if os.path.exists('max_words.pkl'):
+                with open('max_words.pkl', 'rb') as f:
+                        self.max_words = pickle.load(f)
+            else:
                 self.max_words = (None, 0)
-
-            try:
-                self.robots_parsers = self.save_data['robots_parsers']
-            except KeyError as e:
-                self.logger.error(f"Error loading robots_parsers from save_data file: {e}")
+            
+            if os.path.exists('robots_parsers.pkl'):
+                with open('robots_parsers.pkl', 'rb') as f:
+                        self.robots_parsers = pickle.load(f)
+            else:
                 self.robots_parsers = {}
-            try:
-                self.sitemaps = self.save_data['sitemaps']
-            except KeyError as e:
-                self.logger.error(f"Error loading sitemaps from save_data file: {e}")
-                self.sitemaps = defaultdict(set)
-            self.save_data.sync()
+            
+            if os.path.exists('sitemaps.pkl'):
+                with open('sitemaps.pkl', 'rb') as f:
+                        self.sitemaps = pickle.load(f)
+            else:
+                self.sitemaps = {}
+
             self.save.sync()
     
-    def backup_shelve_files(self):
+    def pickle_fields(self):
         """
-        Backup shelve files.
+        Pickle fields.
         """
         current_time = time.time()
         if current_time - self.last_backup_time > self.backup_interval:
-            backup_path = self.backup_folder
-            os.makedirs(backup_path, exist_ok=True)
-
-            for shelve_file in [self.save, self.save_data]:  # Assuming 'save' and 'queue' are your shelve file objects
-                file_path = shelve_file.name + ".db"  # Assuming '.dat' is the file extension for your shelve files
-                copy(file_path, os.path.join(backup_path, os.path.basename(file_path)))
-
-            self.last_backup_time = current_time
-            print(f"Backup created at {backup_path}")
+            with self.lock and self.robots_parsers_lock and self.sitemaps_lock:
+                with open('subdomains.pkl', 'wb') as f:
+                    pickle.dump(self.subdomains, f)
+                with open('word_count.pkl', 'wb') as f:
+                    pickle.dump(self.word_count, f)
+                with open('max_words.pkl', 'wb') as f:
+                    pickle.dump(self.max_words, f)
+                with open('robots_parsers.pkl', 'wb') as f:
+                    pickle.dump(self.robots_parsers, f)
+                with open('sitemaps.pkl', 'wb') as f:
+                    pickle.dump(self.sitemaps, f)
+                self.last_backup_time = current_time
 
     def __del__(self):
         """
         Destructor for Frontier class.
         """
         self.save.close()
-        self.save_data.close()
-
+        self.pickle_fields()
 
