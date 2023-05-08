@@ -5,6 +5,8 @@ __pycache__/
 *.db
 *.pkl
 backups/
+.DS_Store
+webcrawlernotes.md
 
 # C extensions
 *.so

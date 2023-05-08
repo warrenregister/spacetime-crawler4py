@@ -256,13 +256,18 @@ class Frontier(object):
                 self.save[urlhash] = (robots_url, True)
                 self.save.sync()
 
+            # Wait for politeness delay if necessary
+            if domain in self.last_request_time:
+                time_since_last_request = time.time() - self.last_request_time[domain]
+                if time_since_last_request < self.config.politeness_delay:
+                    time.sleep(self.config.politeness_delay - time_since_last_request)
             self.last_request_time[domain] = time.time()
         
-        try:
-            resp = download(robots_url, self.config, self.logger)
-        except Exception as e:
-            self.logger.error(f"Error getting robots.txt from {domain}: {e}")
-            return RobotFileParser()
+            try:
+                resp = download(robots_url, self.config, self.logger)
+            except Exception as e:
+                self.logger.error(f"Error getting robots.txt from {domain}: {e}")
+                return RobotFileParser()
     
 
 
@@ -322,7 +327,8 @@ class Frontier(object):
                             pickle.dump(self.sitemaps, f)
                     urls_from_sitemap = self.get_urls_from_sitemap(sitemap_url)
                     for url in urls_from_sitemap:
-                        self.add_url(url)
+                        if is_valid(url):
+                            self.add_url(url)
                     
 
     def get_urls_from_sitemap(self, sitemap_url):

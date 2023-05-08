@@ -4,6 +4,7 @@ from inspect import getsource
 from utils.download import download
 from utils import get_logger
 import scraper
+import re
 
 
 class Worker(Thread):
@@ -60,7 +61,7 @@ class Worker(Thread):
             if 300 <= resp.status <= 399:
                 self.logger.info(f"Skipping {tbd_url}, status <{resp.status}>.")
                 redirect_url = resp.raw_response.headers.get('Location')
-                if redirect_url:
+                if redirect_url is not None:
                     self.logger.info(f"Redirected {tbd_url} to {redirect_url}.")
                     self.frontier.add_url(redirect_url)
                 self.frontier.mark_url_complete(tbd_url)
