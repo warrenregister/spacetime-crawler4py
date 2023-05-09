@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from queue import Empty, Queue
 from threading import RLock
 from urllib.parse import urljoin, urlparse
-from urllib.robotparser import RobotFileParser
+from reppy.robots import Robots
 from io import StringIO
 from lxml import etree
 from scraper import is_valid
@@ -44,26 +44,26 @@ class Frontier(object):
         self.last_request_time = {} # time of last request to each domain
         self.lock = RLock() # general lock for all other shared resources
         self.robots_parsers_lock = RLock() # lock for robots_parsers
-        self.simhashes = RLock() # lock for simhash dictionary
+        self.simhash_lock = RLock() # lock for simhash dictionary
         self.sitemaps_lock = RLock() # lock for sitemaps
         self.logger = get_logger("FRONTIER")
         self.config = config
         self.simhashes = {}
         self.links_processed = 0
-        self.backup_interval = 1200  # Backup interval in seconds (e.g., 1200 seconds = 20 minutes)
-        self.backup_folder = './backup_datastructures/'  # Folder to store backups
+        self.backup_interval = 300  # Backup interval in seconds (e.g., 1200 seconds = 20 minutes)
+        self.backups = './backup_datastructures'  # Folder to store backups
         self.last_backup_time = time.time()  # Initialize last backup time
 
         self.handle_shelves(restart)
 
         if restart:
             for url in self.config.seed_urls:
-                self.add_url(url)
+                self.add_url(url, 0)
         else:
             self._parse_save_file()
             if not self.save:
                 for url in self.config.seed_urls:
-                    self.add_url(url)
+                    self.add_url(url, 0)
 
     def _parse_save_file(self):
         """
@@ -72,10 +72,10 @@ class Frontier(object):
         with self.lock:
             total_count = len(self.save)
             tbd_count = 0
-            for url, completed in self.save.values():
+            for url, depth, completed in self.save.values():
                 if not completed and is_valid(url):
                     domain = urlparse(url).hostname
-                    self.domains_to_scrape[domain].put(url)
+                    self.domains_to_scrape[domain].put((url, depth))
                     tbd_count += 1
             self.logger.info(
                 f"Found {tbd_count} urls to be downloaded from {total_count} "
@@ -101,21 +101,22 @@ class Frontier(object):
 
                     if time_since_last_request >= self.politeness_delay:
                         try:
-                            url = url_queue.get(block=False)
+                            url, depth = url_queue.get(block=False)
                             self.last_request_time[domain] = time.time()
-                            return url
+                            return url, depth
                         except Empty:
                             del self.domains_to_scrape[domain]
                 time.sleep(self.politeness_delay)
             
-            return None
+            return None, None
     
-    def add_url(self, url, scraped=False):
+    def add_url(self, url, depth, scraped=False):
         """
         Add url to frontier.
 
         Parameters:
-            url (str): url to add to frontier
+            url (str): url to add to fron, tier
+            depth (int): depth of url
             scraped (bool): whether url has been scraped
         """
         url = normalize(url)
@@ -123,7 +124,7 @@ class Frontier(object):
         parsed_url = urlparse(url)
         domain = parsed_url.netloc
         fragmentless_url = parsed_url._replace(fragment="").geturl()
-        urlhash = get_urlhash(url)
+        urlhash = get_urlhash(fragmentless_url)
 
 
         with self.lock and self.robots_parsers_lock:
@@ -144,19 +145,19 @@ class Frontier(object):
             self.subdomains[parsed_url.hostname].add(fragmentless_url)
 
             # Check if the url is allowed by robots.txt
-            if not parser.can_fetch(self.config.user_agent, url): 
-                self.logger.info(f"URL {url} not allowed by robots.txt.")
+            if not parser.can_fetch(self.config.user_agent, parsed_url.path): 
+                self.logger.info(f"URL path of {url} not allowed by robots.txt.")
                 return
 
-            self.save[urlhash] = (fragmentless_url, scraped)
+            self.save[urlhash] = (fragmentless_url, depth, scraped)
             self.save.sync()
-            self.domains_to_scrape[domain].put(url)
+            self.domains_to_scrape[domain].put((fragmentless_url, depth))
 
     def get_simhashes(self):
         """
         Get simhashes.
         """
-        with self.simhashes_lock:
+        with self.simhash_lock:
             return self.simhashes.copy()
             
     def add_simhash(self, url, simhash):
@@ -170,12 +171,13 @@ class Frontier(object):
         with self.simhash_lock:
             self.simhashes[simhash] = url
 
-    def mark_url_complete(self, url):
+    def mark_url_complete(self, url, depth):
         """
         Mark url as completed.
 
         Parameters:
             url (str): url to mark as completed
+            depth (int): depth of url
         """
         urlhash = get_urlhash(url)
         with self.lock:
@@ -183,7 +185,7 @@ class Frontier(object):
                 self.logger.error(
                     f"Completed url {url}, but have not seen it before.")
 
-            self.save[urlhash] = (url, True)
+            self.save[urlhash] = (url, depth, True)
             self.save.sync()
     
     def add_words(self, words: Counter, url: str):
@@ -246,7 +248,7 @@ class Frontier(object):
         with self.lock:
             urlhash = get_urlhash(robots_url)
             if urlhash not in self.save:
-                self.save[urlhash] = (robots_url, True)
+                self.save[urlhash] = (robots_url, 1, True)
                 self.save.sync()
 
             # Wait for politeness delay if necessary
@@ -265,10 +267,11 @@ class Frontier(object):
 
 
         parser = RobotFileParser()
+        parser.set_url(robots_url)
          # Check if the content type is text/plain
         if resp.status == 200 and resp.raw_response is not None and \
             resp.raw_response.headers.get('Content-Type', '').startswith('text/plain'):
-            robots_txt_content = resp.raw_response.content.decode("utf-8")
+            robots_txt_content = resp.raw_response.content.decode("utf-8").replace('\r\n', '\n')
             parser.parse(StringIO(robots_txt_content).readlines())
         else:
             self.logger.error(f"Error getting robots.txt from {domain}")
@@ -285,6 +288,7 @@ class Frontier(object):
         Returns:
             list: list of sitemap urls
         """
+        url = normalize(url)
         domain = urlparse(url).netloc
         with self.robots_parsers_lock and self.sitemaps_lock:
             if domain in self.robots_parsers.keys():
@@ -308,6 +312,7 @@ class Frontier(object):
             sitemap_urls (list): list of sitemap urls
         """
         for sitemap_url in sitemap_urls:
+            sitemap_url = normalize(sitemap_url)
             domain = urlparse(sitemap_url).netloc
             with self.sitemaps_lock:
                 if domain not in self.sitemaps:
@@ -321,7 +326,7 @@ class Frontier(object):
                     urls_from_sitemap = self.get_urls_from_sitemap(sitemap_url)
                     for url in urls_from_sitemap:
                         if is_valid(url):
-                            self.add_url(url)
+                            self.add_url(url, 1)
                     
 
     def get_urls_from_sitemap(self, sitemap_url):
@@ -383,48 +388,31 @@ class Frontier(object):
             restart (bool): whether or not to restart
         """
         if restart:
-            if os.path.exists('./backup_datastructures/' + self.config.save_file + '.db'):
+            if os.path.exists(self.backups + '/' + self.config.save_file + '.db'):
                 self.logger.info(
                     f"Found save file {self.config.save_file}, deleting it.")
-                os.remove('./backup_datastructures/' + self.config.save_file + '.db')
+                os.remove(self.backups + '/' + self.config.save_file + '.db')
         else:
-            if not os.path.exists('./backup_datastructures/' + self.config.save_file + '.db'):
+            if not os.path.exists(self.backups + '/' + self.config.save_file + '.db'):
                 self.logger.info(
-                    f"Did not find save file {'./backup_datastructures/' + self.config.save_file}, "
+                    f"Did not find save file {self.backups + '/' + self.config.save_file}, "
                     f"starting from seed.")
-        
+
         with self.lock:
-            self.save = shelve.open('./backup_datastructures/' + self.config.save_file)
+            self.save = shelve.open(self.backups + '/' + self.config.save_file)
             # check if pickle file exists, if so, load it,
-            if os.path.exists('./backup_datastructures/subdomains.pkl') and not restart:
-                with open('./backup_datastructures/subdomains.pkl', 'rb') as f:
-                        self.subdomains = pickle.load(f)
-            else:
-                self.subdomains = defaultdict(set)
-            
-            if os.path.exists('./backup_datastructures/word_count.pkl') and not restart:
-                with open('./backup_datastructures/word_count.pkl', 'rb') as f:
-                        self.word_count = pickle.load(f)
-            else:
-                self.word_count = Counter()
-            
-            if os.path.exists('./backup_datastructures/max_words.pkl') and not restart:
-                with open('./backup_datastructures/max_words.pkl', 'rb') as f:
-                        self.max_words = pickle.load(f)
-            else:
-                self.max_words = (None, 0)
-            
-            if os.path.exists('./backup_datastructures/robots_parsers.pkl') and not restart:
-                with open('./backup_datastructures/robots_parsers.pkl', 'rb') as f:
-                        self.robots_parsers = pickle.load(f)
-            else:
-                self.robots_parsers = {}
-            
-            if os.path.exists('./backup_datastructures/sitemaps.pkl') and not restart:
-                with open('./backup_datastructures/sitemaps.pkl', 'rb') as f:
-                        self.sitemaps = pickle.load(f)
-            else:
-                self.sitemaps = {}
+            for fname, attr in [('subdomains.pkl', defaultdict(set)),
+                                ('word_count.pkl', Counter()),
+                                ('max_words.pkl', (None, 0)),
+                                ('robots_parsers.pkl', {}),
+                                ('sitemaps.pkl', {}), 
+                                ('simhashes.pkl', {})]:
+                path = os.path.join(self.backups, fname)
+                if os.path.exists(path) and not restart:
+                    with open(path, 'rb') as f:
+                        setattr(self, fname[:-4], pickle.load(f))
+                else:
+                    setattr(self, fname[:-4], attr)
 
             self.save.sync()
     
@@ -434,17 +422,19 @@ class Frontier(object):
         """
         current_time = time.time()
         if current_time - self.last_backup_time > self.backup_interval:
-            with self.lock and self.robots_parsers_lock and self.sitemaps_lock:
-                with open('backup_datastructures/subdomains.pkl', 'wb') as f:
+            with self.lock and self.robots_parsers_lock and self.sitemaps_lock and self.simhash_lock:
+                with open(self.backups + '/subdomains.pkl', 'wb') as f:
                     pickle.dump(self.subdomains, f)
-                with open('backup_datastructures/word_count.pkl', 'wb') as f:
+                with open(self.backups + '/word_count.pkl', 'wb') as f:
                     pickle.dump(self.word_count, f)
-                with open('backup_datastructures/max_words.pkl', 'wb') as f:
+                with open(self.backups + '/max_words.pkl', 'wb') as f:
                     pickle.dump(self.max_words, f)
-                with open('backup_datastructures/robots_parsers.pkl', 'wb') as f:
+                with open(self.backups + '/robots_parsers.pkl', 'wb') as f:
                     pickle.dump(self.robots_parsers, f)
-                with open('backup_datastructures/sitemaps.pkl', 'wb') as f:
+                with open(self.backups + '/sitemaps.pkl', 'wb') as f:
                     pickle.dump(self.sitemaps, f)
+                with open(self.backups + '/simhashes.pkl', 'wb') as f:
+                    pickle.dump(self.simhashes, f)
                 self.last_backup_time = current_time
 
     def __del__(self):

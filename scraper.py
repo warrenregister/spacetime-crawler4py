@@ -3,7 +3,7 @@ from collections import Counter
 from urllib.parse import urljoin, urlparse
 from nltk.corpus import stopwords
 from bs4 import BeautifulSoup
-from simhash import Simhash
+from crawler.simhash import SimHash
 
 MAX_CONTENT_LENGTH = 10000000 # 10MB
 
@@ -59,7 +59,9 @@ def count_words(text):
 
     # Compute word count and simhash for the text
     word_counter = Counter(words)
-    s = Simhash(word_counter)
+    s = SimHash(word_counter)
+    if s is None:
+        pass
     return word_counter, s
 
 
