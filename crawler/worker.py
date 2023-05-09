@@ -30,6 +30,7 @@ class Worker(Thread):
         self.logger = get_logger(f"Worker-{worker_id}", "Worker")
         self.config = config
         self.frontier = frontier
+        self.similarity_threshold = 0.9
         # basic check for requests in scraper
         assert {getsource(scraper).find(req) for req in {"from requests import", "import requests"}} == {-1}, "Do not use requests in scraper.py"
         assert {getsource(scraper).find(req) for req in {"from urllib.request import", "import urllib.request"}} == {-1}, "Do not use urllib.request in scraper.py"
@@ -89,11 +90,12 @@ class Worker(Thread):
                 self.frontier.mark_url_complete(tbd_url)
                 continue
 
-            similar = False
-            if simhash is not None:
-                similar = self.frontier.is_similar(tbd_url, simhash)
+            simhashes = self.frontier.get_simhashes()
+            similar = self.is_similar(simhash, simhashes)
+
             if similar:
                 self.logger.info(f"Skipping {tbd_url}, similar content.")
+                continue
             
             # add scraped words to frontier
             if words is not None and not similar:
@@ -104,36 +106,44 @@ class Worker(Thread):
                     self.frontier.add_url(scraped_url)
             self.frontier.mark_url_complete(tbd_url)
     
+    def is_similar(self, new_simhash, simhashes):
+        """
+        Check if the new simhash is similar to any of the simhashes in the frontier.
+        """
+        for doc_id, old_hash in simhashes.items():
+            if new_simhash.similarity(old_hash) > self.threshold:
+                return True
+        return False
 
-        @staticmethod
-        def is_infinite_trap(url):
-            trap_patterns = [
-                # Repetitive patterns
-                r'(\b\w+\b).*\1',
-                
-                # Calendars
-                r'\b(19[0-9]{2}|2[0-9]{3})/(0[1-9]|1[0-2])/(0[1-9]|[12][0-9]|3[01])\b',
-                
-                # Checkout and account related
-                r'\b(admin|cart|checkout|favorite|password|register|sendfriend|wishlist)\b',
-                
-                # Script related
-                r'\b(cgi-bin|includes|var)\b',
-                
-                # Ordering and filtering related
-                r'\b(filter|limit|order|sort)\b',
-                
-                # Session related
-                r'\b(sessionid|session_id|SID|PHPSESSID)\b',
-                
-                # Other
-                r'\b(ajax|cat|catalog|dir|mode|profile|search|id|pageid|page_id|docid|doc_id)\b',
-                
-                # Social media sites
-                r'\b(?:twitter\.com|www\.twitter\.com|facebook\.com|www\.facebook\.com|tiktok\.com|www\.tiktok\.com|instagram\.com|www\.instagram\.com)\b',
-            ]
+    @staticmethod
+    def is_infinite_trap(url):
+        trap_patterns = [
+            # Repetitive patterns
+            r'(\b\w+\b).*\1',
+            
+            # Calendars
+            r'\b(19[0-9]{2}|2[0-9]{3})/(0[1-9]|1[0-2])/(0[1-9]|[12][0-9]|3[01])\b',
+            
+            # Checkout and account related
+            r'\b(admin|cart|checkout|favorite|password|register|sendfriend|wishlist)\b',
+            
+            # Script related
+            r'\b(cgi-bin|includes|var)\b',
+            
+            # Ordering and filtering related
+            r'\b(filter|limit|order|sort)\b',
+            
+            # Session related
+            r'\b(sessionid|session_id|SID|PHPSESSID)\b',
+            
+            # Other
+            r'\b(ajax|cat|catalog|dir|mode|profile|search|id|pageid|page_id|docid|doc_id)\b',
+            
+            # Social media sites
+            r'\b(?:twitter\.com|www\.twitter\.com|facebook\.com|www\.facebook\.com|tiktok\.com|www\.tiktok\.com|instagram\.com|www\.instagram\.com)\b',
+        ]
 
-            for pattern in trap_patterns:
-                if re.search(pattern, url):
-                    return True
-            return False
+        for pattern in trap_patterns:
+            if re.search(pattern, url):
+                return True
+        return False

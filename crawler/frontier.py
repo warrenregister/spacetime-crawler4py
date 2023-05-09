@@ -44,14 +44,14 @@ class Frontier(object):
         self.last_request_time = {} # time of last request to each domain
         self.lock = RLock() # general lock for all other shared resources
         self.robots_parsers_lock = RLock() # lock for robots_parsers
-        self.shi_lock = RLock() # lock for simhash index
+        self.simhashes = RLock() # lock for simhash dictionary
         self.sitemaps_lock = RLock() # lock for sitemaps
         self.logger = get_logger("FRONTIER")
         self.config = config
-        self.simhash_index = SimhashIndex([], k=3)
+        self.simhashes = {}
         self.links_processed = 0
         self.backup_interval = 1200  # Backup interval in seconds (e.g., 1200 seconds = 20 minutes)
-        self.backup_folder = 'backups'  # Folder to store backups
+        self.backup_folder = './backup_datastructures/'  # Folder to store backups
         self.last_backup_time = time.time()  # Initialize last backup time
 
         self.handle_shelves(restart)
@@ -152,30 +152,23 @@ class Frontier(object):
             self.save.sync()
             self.domains_to_scrape[domain].put(url)
 
-    def is_similar(self, key, simhash):
+    def get_simhashes(self):
         """
-        Checks if the given simhash is similar to any already seen simhashes.
-
-        Parameters:
-            simhash (Simhash): Simhash to compare
-        Returns:
-            bool: True if similar, False otherwise
+        Get simhashes.
         """
-        with self.shi_lock:
-            similar =  bool(self.simhash_index.get_near_dups(simhash))
-            if similar is True:
-                self.add_simhash(key, simhash)
-            return similar
-    
-    def add_simhash(self, key, simhash):
+        with self.simhashes_lock:
+            return self.simhashes.copy()
+            
+    def add_simhash(self, url, simhash):
         """
         Add simhash to simhash index.
 
         Parameters:
+            url (str): url to add
             simhash (Simhash): Simhash to add
         """
-        with self.shi_lock:
-            self.simhash_index.add(key, simhash)
+        with self.simhash_lock:
+            self.simhashes[simhash] = url
 
     def mark_url_complete(self, url):
         """
@@ -390,45 +383,45 @@ class Frontier(object):
             restart (bool): whether or not to restart
         """
         if restart:
-            if os.path.exists(self.config.save_file + '.db'):
+            if os.path.exists('./backup_datastructures/' + self.config.save_file + '.db'):
                 self.logger.info(
                     f"Found save file {self.config.save_file}, deleting it.")
-                os.remove('' + self.config.save_file + '.db')
+                os.remove('./backup_datastructures/' + self.config.save_file + '.db')
         else:
-            if not os.path.exists(self.config.save_file + '.db'):
+            if not os.path.exists('./backup_datastructures/' + self.config.save_file + '.db'):
                 self.logger.info(
-                    f"Did not find save file {self.config.save_file}, "
+                    f"Did not find save file {'./backup_datastructures/' + self.config.save_file}, "
                     f"starting from seed.")
         
         with self.lock:
-            self.save = shelve.open(self.config.save_file)
+            self.save = shelve.open('./backup_datastructures/' + self.config.save_file)
             # check if pickle file exists, if so, load it,
-            if os.path.exists('subdomains.pkl'):
-                with open('subdomains.pkl', 'rb') as f:
+            if os.path.exists('./backup_datastructures/subdomains.pkl') and not restart:
+                with open('./backup_datastructures/subdomains.pkl', 'rb') as f:
                         self.subdomains = pickle.load(f)
             else:
                 self.subdomains = defaultdict(set)
             
-            if os.path.exists('word_count.pkl'):
-                with open('word_count.pkl', 'rb') as f:
+            if os.path.exists('./backup_datastructures/word_count.pkl') and not restart:
+                with open('./backup_datastructures/word_count.pkl', 'rb') as f:
                         self.word_count = pickle.load(f)
             else:
                 self.word_count = Counter()
             
-            if os.path.exists('max_words.pkl'):
-                with open('max_words.pkl', 'rb') as f:
+            if os.path.exists('./backup_datastructures/max_words.pkl') and not restart:
+                with open('./backup_datastructures/max_words.pkl', 'rb') as f:
                         self.max_words = pickle.load(f)
             else:
                 self.max_words = (None, 0)
             
-            if os.path.exists('robots_parsers.pkl'):
-                with open('robots_parsers.pkl', 'rb') as f:
+            if os.path.exists('./backup_datastructures/robots_parsers.pkl') and not restart:
+                with open('./backup_datastructures/robots_parsers.pkl', 'rb') as f:
                         self.robots_parsers = pickle.load(f)
             else:
                 self.robots_parsers = {}
             
-            if os.path.exists('sitemaps.pkl'):
-                with open('sitemaps.pkl', 'rb') as f:
+            if os.path.exists('./backup_datastructures/sitemaps.pkl') and not restart:
+                with open('./backup_datastructures/sitemaps.pkl', 'rb') as f:
                         self.sitemaps = pickle.load(f)
             else:
                 self.sitemaps = {}
@@ -442,15 +435,15 @@ class Frontier(object):
         current_time = time.time()
         if current_time - self.last_backup_time > self.backup_interval:
             with self.lock and self.robots_parsers_lock and self.sitemaps_lock:
-                with open('subdomains.pkl', 'wb') as f:
+                with open('backup_datastructures/subdomains.pkl', 'wb') as f:
                     pickle.dump(self.subdomains, f)
-                with open('word_count.pkl', 'wb') as f:
+                with open('backup_datastructures/word_count.pkl', 'wb') as f:
                     pickle.dump(self.word_count, f)
-                with open('max_words.pkl', 'wb') as f:
+                with open('backup_datastructures/max_words.pkl', 'wb') as f:
                     pickle.dump(self.max_words, f)
-                with open('robots_parsers.pkl', 'wb') as f:
+                with open('backup_datastructures/robots_parsers.pkl', 'wb') as f:
                     pickle.dump(self.robots_parsers, f)
-                with open('sitemaps.pkl', 'wb') as f:
+                with open('backup_datastructures/sitemaps.pkl', 'wb') as f:
                     pickle.dump(self.sitemaps, f)
                 self.last_backup_time = current_time
 
@@ -458,6 +451,7 @@ class Frontier(object):
         """
         Destructor for Frontier class.
         """
-        self.save.close()
+        if self.save is not None:
+            self.save.close()
         self.pickle_fields()
 

@@ -78,6 +78,10 @@ def extract_text_and_next_links(url, resp):
         return []
 
     soup = BeautifulSoup(resp.raw_response.content, "html.parser")
+
+    # Remove header, footer, and nav tags to reduce repeat link adds
+    for tag in soup.find_all(['header', 'footer', 'nav']):
+        tag.decompose()
     links = []
 
     for anchor in soup.find_all("a"):
@@ -85,6 +89,10 @@ def extract_text_and_next_links(url, resp):
         if href:
             full_url = urljoin(url, href)
             links.append(full_url)
+    
+    # Remove script and style contents
+    for tag in soup(['script', 'style']):
+        tag.decompose()
 
     return links, soup.get_text()
 
