@@ -156,40 +156,35 @@ def is_infinite_trap(url):
             # Script related
             r'\b(cgi-bin|\.aspx|\.jsp|\.cgi|\.js)\b',
         ],
-        "params": [
-            # Calendars
-            r'\b(19[0-9]{2}|2[0-9]{3})/(0[1-9]|1[0-2])/(0[1-9]|[12][0-9]|3[01])\b',
+        "query": [
+                        # Calendars
+                        r'(19[0-9]{2}|2[0-9]{3})/(0[1-9]|1[0-2])/(0[1-9]|[12][0-9]|3[01])',
 
-            # Ordering and filtering related
-            r'\b(filter|limit|order|sort|version|precision)(=|/)',
+                        # Ordering and filtering related
+                        r'(filter|limit|order|sort|version|precision)=',
 
-            # Table views
-            r'\bview=table\b',
+                        # Table views
+                        r'view=table',
 
-            # Session related
-            r'\b(sesssionid|session_id|SID|PHPSESSID|JSESSIONID|ASPSESSIONID|sid|view)\b',
+                        # Session related
+                        r'(sessionid|session_id|SID|PHPSESSID|JSESSIONID|ASPSESSIONID|sid|view)=',
 
-            # Social media sites
-            r'\b(?:\btwitter\.com\b|\bwww\.twitter\.com\b|\bfacebook\.com\b|\bwww\.facebook\.com\b|\btiktok\.com\b|\bwww\.tiktok\.com\b|\binstagram\.com\b|\bwww\.instagram\.com\b)\b',
-        ]
+                        # Social media sites
+                        r'(twitter\.com|www\.twitter\.com|facebook\.com|www\.facebook\.com|tiktok\.com|www\.tiktok\.com|instagram\.com|www\.instagram\.com)'
+                        ]
+
     }
 
     parsed_url = urlparse(url)
     for section, patterns in trap_patterns.items():
         target = getattr(parsed_url, section)
-        if section == "params":  # if we are checking params, parse them first
-            target = str(parse_qs(target))  # parse the parameters and convert to string
+        # if section == "query":  # if we are checking params, parse them first
+        #     target = str(parse_qs(target))  # parse the parameters and convert to string
         for i, pattern in enumerate(patterns):
             if re.search(pattern, target):
                 return True, i
     return False, None
 
 if __name__ == "__main__":
-    print(is_valid("http://www.ics.uci.edu"))
-    print(is_valid("http://www.cs.uci.edu"))
-    print(is_valid("http://www.informatics.uci.edu"))
-    print(is_valid("http://www.stat.uci.edu/?page_id=352#fragment"))
-    print(is_valid("http://www.test.ics.uci.edu/ex.html#fake"))
-    print(is_valid("http://www.anything.cs.uci.edu/"))
-    print(is_valid("http://www.what.informatics.uci.edu"))
-    print(is_valid("http://www.help.stat.uci.edu/"))
+    test = ('https://grape.ics.uci.edu/wiki/public/timeline?from=2016-05-14T09%3A56%3A27-07%3A00&precision=second', 3)
+    print(is_infinite_trap(test[0]))
