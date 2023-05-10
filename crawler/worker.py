@@ -28,12 +28,12 @@ class Worker(Thread):
             config (Config): A Config object containing the crawler configuration.
             frontier (Frontier): A Frontier object managing the list of URLs to be downloaded and their state.
         """
-        self.logger = get_logger(f"Worker-{worker_id}", "Worker")
+        self.logger = get_logger(f"Worker-{worker_id}", "WORKER")
         self.config = config
         self.frontier = frontier
         self.similarity_threshold = 0.95
         self.max_depth = 28
-        self.min_words = 40
+        self.min_words = 5
         # basic check for requests in scraper
         assert {getsource(scraper).find(req) for req in {"from requests import", "import requests"}} == {-1}, "Do not use requests in scraper.py"
         assert {getsource(scraper).find(req) for req in {"from urllib.request import", "import urllib.request"}} == {-1}, "Do not use urllib.request in scraper.py"
@@ -168,6 +168,10 @@ def jaccard_similarity(url1, url2):
     parsed1 = urlparse(url1)
     parsed2 = urlparse(url2)
 
+    # If the domains/hosts are different, return 0
+    if parsed1.netloc != parsed2.netloc:
+        return 0
+
     set1 = set(parsed1.path.split('/')) | set((k, tuple(v)) for k, v in parse_qs(parsed1.query).items())
     set2 = set(parsed2.path.split('/')) | set((k, tuple(v)) for k, v in parse_qs(parsed2.query).items())
 
@@ -177,7 +181,8 @@ def jaccard_similarity(url1, url2):
     return len(intersection) / len(union)
 
 
-def is_similar_url(new_url, old_urls, threshold=0.8):
+
+def is_similar_url(new_url, old_urls, threshold=0.95, similarity_count_threshold=15):
     """
     Check if a new URL is similar to any old URLs.
     
@@ -185,14 +190,19 @@ def is_similar_url(new_url, old_urls, threshold=0.8):
         new_url (str): The new URL to check.
         old_urls (list or set): The old URLs to compare against.
         threshold (float): The Jaccard similarity threshold above which a URL is considered similar.
+        similarity_count_threshold (int): The number of similar URLs above which a new URL is considered similar.
 
     Returns:
-        bool: True if the new URL is similar to any old URL, False otherwise.
+        bool: True if the new URL is similar to a significant number of old URLs, False otherwise.
     """
+    similar_urls_count = 0
     for old_url in old_urls:
         if jaccard_similarity(new_url, old_url) >= threshold:
-            return True
+            similar_urls_count += 1
+            if similar_urls_count >= similarity_count_threshold:
+                return True
 
     return False
+
 
 
