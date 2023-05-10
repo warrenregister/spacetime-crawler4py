@@ -33,7 +33,7 @@ class Worker(Thread):
         self.frontier = frontier
         self.similarity_threshold = 0.95
         self.max_depth = 28
-        self.min_words = 5
+        self.min_words = 30
         # basic check for requests in scraper
         assert {getsource(scraper).find(req) for req in {"from requests import", "import requests"}} == {-1}, "Do not use requests in scraper.py"
         assert {getsource(scraper).find(req) for req in {"from urllib.request import", "import urllib.request"}} == {-1}, "Do not use urllib.request in scraper.py"
@@ -59,19 +59,20 @@ class Worker(Thread):
             if is_similar_url(tbd_url, low_data):
                 self.logger.info(f"Skipping {tbd_url}, similar to previous low data urls.")
                 self.frontier.mark_url_complete(tbd_url, depth)
+                self.frontier.add_low_data_url(tbd_url, 404)
                 continue
 
             # check if url is similar to error urls
             if is_similar_url(tbd_url, error):
                 self.logger.info(f"Skipping {tbd_url}, similar to previous error urls.")
                 self.frontier.mark_url_complete(tbd_url, depth)
+                self.frontier.add_error_url(tbd_url, 404)
                 continue
                 
             # check if meets common trap criteria
-            trap_checks = ['calendar', 'script-like', 'filtering', 'social-media', 'table']
-            is_trap, index = scraper.is_infinite_trap(tbd_url)
+            is_trap, pattern = scraper.is_infinite_trap(tbd_url)
             if is_trap:
-                self.logger.info(f"Skipping {tbd_url}, infinite trap detected {trap_checks[index]}.")
+                self.logger.info(f"Skipping {tbd_url}, infinite trap detected {pattern}.")
                 self.frontier.mark_url_complete(tbd_url, depth)
                 continue
 
@@ -182,7 +183,7 @@ def jaccard_similarity(url1, url2):
 
 
 
-def is_similar_url(new_url, old_urls, threshold=0.95, similarity_count_threshold=15):
+def is_similar_url(new_url, old_urls, threshold=0.95, similarity_count_threshold=5):
     """
     Check if a new URL is similar to any old URLs.
     

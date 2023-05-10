@@ -50,7 +50,7 @@ class Frontier(object):
         self.low_data_urls = set()
         self.error_urls = set()
         self.links_processed = 0
-        self.backup_interval = 300  # Backup interval in seconds (e.g., 1200 seconds = 20 minutes)
+        self.backup_interval = 7200  # Backup interval in seconds (e.g., 1200 seconds = 20 minutes)
         self.backups = './backup_datastructures'  # Folder to store backups
         self.last_backup_time = time.time()  # Initialize last backup time
 
@@ -453,13 +453,14 @@ class Frontier(object):
 
             self.save.sync()
     
-    def pickle_fields(self):
+    def pickle_fields(self, force=False):
         """
         Pickle fields.
         """
         current_time = time.time()
-        if current_time - self.last_backup_time > self.backup_interval:
+        if current_time - self.last_backup_time > self.backup_interval or force:
             with self.lock and self.robots_parsers_lock and self.sitemaps_lock and self.simhash_lock:
+                time.sleep(10)
                 with open(self.backups + '/subdomains.pkl', 'wb') as f:
                     pickle.dump(self.subdomains, f)
                 with open(self.backups + '/word_count.pkl', 'wb') as f:

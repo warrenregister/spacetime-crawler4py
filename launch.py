@@ -16,8 +16,7 @@ def main(config_file, restart):
     config.cache_server = get_cache_server(config, restart)
     crawler = Crawler(config, restart)
     crawler.start()
-    crawler.frontier.save.close()
-    crawler.frontier.pickle_fields()
+    crawler.frontier.pickle_fields(True)
 
 
 if __name__ == "__main__":
