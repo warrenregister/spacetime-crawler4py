@@ -5,14 +5,12 @@ from collections import Counter, defaultdict
 from queue import Empty, Queue
 from threading import RLock
 from urllib.parse import urljoin, urlparse
-from reppy.robots import Robots
 from io import StringIO
 from lxml import etree
 from scraper import is_valid
 from utils.download import download
 from utils import get_logger, get_urlhash, normalize
-from simhash import SimhashIndex
-from shutil import copy
+from crawler.robot_parser import CustomRobotsParser
 import pickle
 
 # Remember to not visit the cache website yet
@@ -49,6 +47,8 @@ class Frontier(object):
         self.logger = get_logger("FRONTIER")
         self.config = config
         self.simhashes = {}
+        self.low_data_urls = set()
+        self.error_urls = set()
         self.links_processed = 0
         self.backup_interval = 300  # Backup interval in seconds (e.g., 1200 seconds = 20 minutes)
         self.backups = './backup_datastructures'  # Folder to store backups
@@ -145,7 +145,7 @@ class Frontier(object):
             self.subdomains[parsed_url.hostname].add(fragmentless_url)
 
             # Check if the url is allowed by robots.txt
-            if not parser.can_fetch(self.config.user_agent, parsed_url.path): 
+            if not parser.can_fetch(parsed_url.path): 
                 self.logger.info(f"URL path of {url} not allowed by robots.txt.")
                 return
 
@@ -170,6 +170,35 @@ class Frontier(object):
         """
         with self.simhash_lock:
             self.simhashes[simhash] = url
+    
+    def get_bad_urls(self):
+        """
+        Get both low data urls and error urls.
+        """
+        with self.lock:
+            return self.low_data_urls.copy(), self.error_urls.copy()
+
+    def add_low_data_url(self, url):
+        """
+        Add low data url to low data url index.
+
+        Parameters:
+            url (str): url to add
+        """
+        with self.lock:
+            self.low_data_urls.add(url)
+    
+    def add_error_url(self, url, status):
+        """
+        Add error url to error url index.
+
+        Parameters:
+            url (str): url to add
+            status (int): status code of error
+        """
+        with self.lock:
+            if status >= 400:
+                self.error_urls.add(url)
 
     def mark_url_complete(self, url, depth):
         """
@@ -257,24 +286,24 @@ class Frontier(object):
                 if time_since_last_request < self.config.politeness_delay:
                     time.sleep(self.config.politeness_delay - time_since_last_request)
             self.last_request_time[domain] = time.time()
-        
+            
             try:
                 resp = download(robots_url, self.config, self.logger)
             except Exception as e:
                 self.logger.error(f"Error getting robots.txt from {domain}: {e}")
-                return RobotFileParser()
-    
+                # Return an empty robots parser if there's an error
+                return CustomRobotsParser(self.config.user_agent)  # empty parser
 
-
-        parser = RobotFileParser()
-        parser.set_url(robots_url)
-         # Check if the content type is text/plain
-        if resp.status == 200 and resp.raw_response is not None and \
-            resp.raw_response.headers.get('Content-Type', '').startswith('text/plain'):
-            robots_txt_content = resp.raw_response.content.decode("utf-8").replace('\r\n', '\n')
-            parser.parse(StringIO(robots_txt_content).readlines())
-        else:
-            self.logger.error(f"Error getting robots.txt from {domain}")
+            # Check if the content type is text/plain
+            if resp.status == 200 and resp.raw_response is not None and \
+                resp.raw_response.headers.get('Content-Type', '').startswith('text/plain'):
+                robots_txt_content = resp.raw_response.content.decode("utf-8").replace('\r\n', '\n')
+                parser = CustomRobotsParser(self.config.user_agent)
+                parser.parse(robots_txt_content)
+            else:
+                self.logger.error(f"Error getting robots.txt from {domain}")
+                # Return an empty robots parser if there's an error
+                parser = CustomRobotsParser(self.config.user_agent)  # empty parser
 
         return parser
 
@@ -297,7 +326,7 @@ class Frontier(object):
                 parser = self.get_robots_txt_parser(url)
             
             sitemap_urls = []
-            for link in parser.sitemaps:
+            for link in parser.get_sitemaps():
                 sitemap_urls.append(link)
         
         self.process_sitemaps(sitemap_urls)
@@ -319,10 +348,7 @@ class Frontier(object):
                     self.sitemaps[domain] = set()
                 if sitemap_url not in self.sitemaps[domain]:
                     self.sitemaps[domain].add(sitemap_url)
-                    with self.lock:
-                        # use pickle to save sitemaps
-                        with open('sitemaps.pkl', 'wb') as f:
-                            pickle.dump(self.sitemaps, f)
+
                     urls_from_sitemap = self.get_urls_from_sitemap(sitemap_url)
                     for url in urls_from_sitemap:
                         if is_valid(url):
@@ -344,14 +370,21 @@ class Frontier(object):
             if time_diff < self.politeness_delay:
                 time.sleep(time_diff)
         
+        # respect politeness if necessary
+        domain = urlparse(sitemap_url).netloc
+        if domain in self.last_request_time:
+            time_since_last_request = time.time() - self.last_request_time[domain]
+            if time_since_last_request < self.politeness_delay:
+                time.sleep(self.politeness_delay - time_since_last_request)
+        
         try:
             resp = download(sitemap_url, self.config, self.logger)
         except Exception as e:
-            self.logger.error(f"Error downloading sitemap {sitemap_url}")
+            self.logger.error(f"Error {e} downloading sitemap {sitemap_url}")
             return []
 
         if resp.status != 200:
-            self.logger.error(f"Error downloading sitemap {sitemap_url}")
+            self.logger.error(f"Error w/ status {resp.status} downloading sitemap {sitemap_url}")
             return []
 
         try:
@@ -406,7 +439,11 @@ class Frontier(object):
                                 ('max_words.pkl', (None, 0)),
                                 ('robots_parsers.pkl', {}),
                                 ('sitemaps.pkl', {}), 
-                                ('simhashes.pkl', {})]:
+                                ('simhashes.pkl', {}),
+                                ('last_request_time.pkl', {}),
+                                ('last_backup_time.pkl', 0),
+                                ('bad_urls.pkl', set()),
+                                ('errors.pkl', set()),]:
                 path = os.path.join(self.backups, fname)
                 if os.path.exists(path) and not restart:
                     with open(path, 'rb') as f:
@@ -435,6 +472,12 @@ class Frontier(object):
                     pickle.dump(self.sitemaps, f)
                 with open(self.backups + '/simhashes.pkl', 'wb') as f:
                     pickle.dump(self.simhashes, f)
+                with open(self.backups + '/last_request_time.pkl', 'wb') as f:
+                    pickle.dump(self.last_request_time, f)
+                with open(self.backups + '/bad_urls.pkl', 'wb') as f:
+                    pickle.dump(self.bad_urls, f)
+                with open(self.backups + '/errors.pkl', 'wb') as f:
+                    pickle.dump(self.errors, f)
                 self.last_backup_time = current_time
 
     def __del__(self):

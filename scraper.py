@@ -4,6 +4,7 @@ from urllib.parse import urljoin, urlparse
 from nltk.corpus import stopwords
 from bs4 import BeautifulSoup
 from crawler.simhash import SimHash
+from nltk import download
 
 MAX_CONTENT_LENGTH = 10000000 # 10MB
 
@@ -53,7 +54,11 @@ def count_words(text):
             dict: Counter of words
             Simhash: Simhash of words
     """
-    stop_words = set(stopwords.words('english'))
+    try:
+        stop_words = set(stopwords.words('english'))
+    except AttributeError:
+        download('stopwords')
+        stop_words = set(stopwords.words('english'))
     words = re.findall(r'\b\w+\b', text.lower())
     words = [word for word in words if word not in stop_words]
 
@@ -126,6 +131,9 @@ def is_valid(url):
         valid_domain = any(re.match(domain, url) for domain in allowed_domains)
         if not valid_domain:
             return False
+        
+        if is_infinite_trap(url):
+            return False
 
         # Additional checks for URL patterns
         # Add more checks here if needed
@@ -140,6 +148,34 @@ def is_valid(url):
     except TypeError:
         return False
 
+
+def is_infinite_trap(url):
+    trap_patterns = [
+        # Calendars
+        r'\b(19[0-9]{2}|2[0-9]{3})/(0[1-9]|1[0-2])/(0[1-9]|[12][0-9]|3[01])\b',
+        
+        # Script related
+        r'\b(cgi-bin|\.aspx|\.jsp|\.cgi|\.js)\b',
+        
+        # Ordering and filtering related
+        r'\b(filter|limit|order|sort|version|precision)(=|/)'
+
+
+            # Table views
+        r'\bview=table\b',
+        
+        # Session related
+        # r'\b(sessionid|session_id|SID|PHPSESSID|JSESSIONID|ASPSESSIONID|sid|view)\b',
+        
+        # Social media sites
+        r'\b(?:\btwitter\.com\b|\bwww\.twitter\.com\b|\bfacebook\.com\b|\bwww\.facebook\.com\b|\btiktok\.com\b|\bwww\.tiktok\.com\b|\binstagram\.com\b|\bwww\.instagram\.com\b)\b'
+
+    ]
+
+    for i, pattern in enumerate(trap_patterns):
+        if re.search(pattern, url):
+            return True, i
+    return False, None
 
 if __name__ == "__main__":
     print(is_valid("http://www.ics.uci.edu"))

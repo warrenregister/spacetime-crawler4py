@@ -4,7 +4,8 @@ from inspect import getsource
 from utils.download import download
 from utils import get_logger
 import scraper
-import re
+from urllib.parse import urlparse, parse_qs
+from difflib import SequenceMatcher
 
 
 class Worker(Thread):
@@ -32,6 +33,7 @@ class Worker(Thread):
         self.frontier = frontier
         self.similarity_threshold = 0.95
         self.max_depth = 28
+        self.min_words = 40
         # basic check for requests in scraper
         assert {getsource(scraper).find(req) for req in {"from requests import", "import requests"}} == {-1}, "Do not use requests in scraper.py"
         assert {getsource(scraper).find(req) for req in {"from urllib.request import", "import urllib.request"}} == {-1}, "Do not use urllib.request in scraper.py"
@@ -52,9 +54,22 @@ class Worker(Thread):
                 self.frontier.mark_url_complete(tbd_url, depth)
                 continue
 
+            # check if url is similar to low data urls
+            low_data, error = self.frontier.get_bad_urls()
+            if is_similar_url(tbd_url, low_data):
+                self.logger.info(f"Skipping {tbd_url}, similar to previous low data urls.")
+                self.frontier.mark_url_complete(tbd_url, depth)
+                continue
+
+            # check if url is similar to error urls
+            if is_similar_url(tbd_url, error):
+                self.logger.info(f"Skipping {tbd_url}, similar to previous error urls.")
+                self.frontier.mark_url_complete(tbd_url, depth)
+                continue
+                
             # check if meets common trap criteria
-            trap_checks = ['calendar', 'script-like', 'social-media']
-            is_trap, index = self.is_infinite_trap(tbd_url)
+            trap_checks = ['calendar', 'script-like', 'filtering', 'social-media', 'table']
+            is_trap, index = scraper.is_infinite_trap(tbd_url)
             if is_trap:
                 self.logger.info(f"Skipping {tbd_url}, infinite trap detected {trap_checks[index]}.")
                 self.frontier.mark_url_complete(tbd_url, depth)
@@ -77,6 +92,7 @@ class Worker(Thread):
                 self.frontier.mark_url_complete(tbd_url, depth)
                 continue
             elif resp.status != 200:
+                self.frontier.add_error_url(tbd_url, resp.status)
                 self.logger.info(f"Skipping {tbd_url}, status <{resp.status}>.")
                 self.frontier.mark_url_complete(tbd_url, depth)
                 continue
@@ -98,7 +114,16 @@ class Worker(Thread):
                 self.logger.error(f"Error while scraping {tbd_url}: {str(e)}")
                 self.frontier.mark_url_complete(tbd_url, depth)
                 continue
+
+            # check if there is very little content
+            if words is not None and len(words) < self.min_words:
+                self.logger.info(f"Skipping {tbd_url}, too few words.")
+                url_hash = scraper.SimHash(words)
+                self.frontier.add_low_data_url(tbd_url)
+                self.frontier.mark_url_complete(tbd_url, depth)
+                continue
             
+            similar = False
             if simhash is not None:
                 simhashes = self.frontier.get_simhashes()
                 similar = self.is_similar(simhash, simhashes)
@@ -106,15 +131,15 @@ class Worker(Thread):
 
             if similar:
                 self.logger.info(f"Skipping {tbd_url}, similar content.")
+                self.frontier.mark_url_complete(tbd_url, depth)
                 continue
             
             # add scraped words to frontier
             if words is not None:
                 self.frontier.add_words(words, tbd_url)
             
-            if not similar:
-                for scraped_url in scraped_urls:
-                    self.frontier.add_url(scraped_url, depth + 1)
+            for scraped_url in scraped_urls:
+                self.frontier.add_url(scraped_url, depth + 1)
             self.frontier.mark_url_complete(tbd_url, depth)
     
     def is_similar(self, new_simhash, simhashes):
@@ -129,27 +154,45 @@ class Worker(Thread):
                 return True
         return False
 
-    @staticmethod
-    def is_infinite_trap(url):
-        trap_patterns = [
-            # Calendars (more strict pattern)
-            r'\b(19[0-9]{2}|2[0-9]{3})/(0[1-9]|1[0-2])/(0[1-9]|[12][0-9]|3[01])\b',
-            
-            # Script related
-            r'\b(cgi-bin|\.aspx|\.jsp|\.cgi|\.js)\b',
-            
-            # Ordering and filtering related
-            # r'\b(filter|limit|order|sort)\b',
-            
-            # Session related
-            # r'\b(sessionid|session_id|SID|PHPSESSID|JSESSIONID|ASPSESSIONID|sid|view)\b',
-            
-            # Social media sites
-            r'\b(?:twitter\.com|www\.twitter\.com|facebook\.com|www\.facebook\.com|tiktok\.com|www\.tiktok\.com|instagram\.com|www\.instagram\.com)\b',
-        ]
 
-        for i, pattern in enumerate(trap_patterns):
-            if re.search(pattern, url):
-                return True, i
-        return False, None
+
+
+def jaccard_similarity(url1, url2):
+    """
+    Calculate the Jaccard similarity of two URLs.
+    Parameters:
+        url1, url2 (str): URLs to compare.
+    Returns:
+        float: Jaccard similarity.
+    """
+    parsed1 = urlparse(url1)
+    parsed2 = urlparse(url2)
+
+    set1 = set(parsed1.path.split('/')) | set((k, tuple(v)) for k, v in parse_qs(parsed1.query).items())
+    set2 = set(parsed2.path.split('/')) | set((k, tuple(v)) for k, v in parse_qs(parsed2.query).items())
+
+    intersection = set1 & set2
+    union = set1 | set2
+
+    return len(intersection) / len(union)
+
+
+def is_similar_url(new_url, old_urls, threshold=0.8):
+    """
+    Check if a new URL is similar to any old URLs.
+    
+    Parameters:
+        new_url (str): The new URL to check.
+        old_urls (list or set): The old URLs to compare against.
+        threshold (float): The Jaccard similarity threshold above which a URL is considered similar.
+
+    Returns:
+        bool: True if the new URL is similar to any old URL, False otherwise.
+    """
+    for old_url in old_urls:
+        if jaccard_similarity(new_url, old_url) >= threshold:
+            return True
+
+    return False
+
 
