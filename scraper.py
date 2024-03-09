@@ -1,10 +1,10 @@
 import re
 from collections import Counter
 from urllib.parse import urljoin, urlparse, parse_qs
-from nltk.corpus import stopwords
+#from nltk.corpus import stopwords
 from bs4 import BeautifulSoup
 from crawler.simhash import SimHash
-from nltk import download
+#from nltk import download
 
 MAX_CONTENT_LENGTH = 10000000 # 10MB
 

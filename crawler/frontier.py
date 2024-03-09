@@ -26,7 +26,6 @@ class Frontier(object):
         logger (Logger): logger instance
         config (Config): configuration instance
         save (shelve): save file instance
-        word_count (Counter): word count for frontier set
         subdomains (set): set of subdomains
     """
     def __init__(self, config, restart):
@@ -216,34 +215,6 @@ class Frontier(object):
 
             self.save[urlhash] = (url, depth, True)
             self.save.sync()
-    
-    def add_words(self, words: Counter, url: str):
-        """
-        Add words to word count and update max words if necessary.
-
-        Parameters:
-            words (Counter): words to add to word count
-        """
-        with self.lock:
-            self._update_max_words(sum(words.values()), url)
-            self.word_count += words
-            # use pickle to save counter
-            with open('word_count.pkl', 'wb') as f:
-                pickle.dump(self.word_count, f)
-    
-    def _update_max_words(self, count, url):
-        """
-        Update max words for frontier set.
-
-        Parameters:
-            url (str): url to add to frontier set
-        """
-        with self.lock:
-            if count > self.max_words[1]:
-                self.max_words = (url, count)
-                # use pickle to save max words
-                with open('max_words.pkl', 'wb') as f:
-                    pickle.dump(self.max_words, f)
     
     def get_robots_txt_parser(self, url):
         """
@@ -435,8 +406,6 @@ class Frontier(object):
             self.save = shelve.open(self.backups + '/' + self.config.save_file)
             # check if pickle file exists, if so, load it,
             for fname, attr in [('subdomains.pkl', defaultdict(set)),
-                                ('word_count.pkl', Counter()),
-                                ('max_words.pkl', (None, 0)),
                                 ('robots_parsers.pkl', {}),
                                 ('sitemaps.pkl', {}), 
                                 ('simhashes.pkl', {}),
@@ -463,10 +432,6 @@ class Frontier(object):
                 time.sleep(10)
                 with open(self.backups + '/subdomains.pkl', 'wb') as f:
                     pickle.dump(self.subdomains, f)
-                with open(self.backups + '/word_count.pkl', 'wb') as f:
-                    pickle.dump(self.word_count, f)
-                with open(self.backups + '/max_words.pkl', 'wb') as f:
-                    pickle.dump(self.max_words, f)
                 with open(self.backups + '/robots_parsers.pkl', 'wb') as f:
                     pickle.dump(self.robots_parsers, f)
                 with open(self.backups + '/sitemaps.pkl', 'wb') as f:

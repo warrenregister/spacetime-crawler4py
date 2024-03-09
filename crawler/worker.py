@@ -156,8 +156,6 @@ class Worker(Thread):
         return False
 
 
-
-
 def jaccard_similarity(url1, url2):
     """
     Calculate the Jaccard similarity of two URLs.
