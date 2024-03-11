@@ -8,6 +8,8 @@ from urllib.parse import urlparse, parse_qs
 from difflib import SequenceMatcher
 
 
+
+# TODO: Remove simhashing and either modify or remove url similarity checks
 class Worker(Thread):
     """
     The Worker class is a subclass of Thread that downloads URLs from the Frontier

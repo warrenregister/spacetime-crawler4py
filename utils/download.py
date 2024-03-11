@@ -5,7 +5,7 @@ import time
 from utils.response import Response
 import requests
 
-
+# TODO Modify download to work on any website, not just the cache server for UCI websites
 def download(url, config, logger=None):
     """
     Download the content of the given URL using the cache server.

@@ -13,6 +13,8 @@ from utils import get_logger, get_urlhash, normalize
 from crawler.robot_parser import CustomRobotsParser
 import pickle
 
+
+# TODO: Remove simhashing and modify bad url similarity checks to ensure that no wiki page is downloaded twice
 # Remember to not visit the cache website yet
 class Frontier(object):
     """
