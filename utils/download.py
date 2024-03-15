@@ -1,14 +1,12 @@
 import requests
-import cbor
-import time
 
 from utils.response import Response
 import requests
 
-# TODO Modify download to work on any website, not just the cache server for UCI websites
+
 def download(url, config, logger=None):
     """
-    Download the content of the given URL using the cache server.
+    Download the content of the given URL from the internet.
 
     Args:
         url (str): The URL to download.
@@ -18,17 +16,33 @@ def download(url, config, logger=None):
     Returns:
         Response: A Response object containing the downloaded content and metadata.
     """
-    host, port = config.cache_server
-    resp = requests.get(
-        f"http://{host}:{port}/",
-        params=[("q", f"{url}"), ("u", f"{config.user_agent}")])
+
+    headers = {
+        "User-Agent": config.user_agent
+    }
+
     try:
-        if resp and resp.content:
-            return Response(cbor.loads(resp.content))
-    except (EOFError, ValueError) as e:
-        pass
-    logger.error(f"Spacetime Response error {resp} with url {url}.")
+        resp = requests.get(url, headers=headers)
+        resp.raise_for_status()  # Raise an exception for non-2xx status codes
+
+        if resp.content:
+            return Response({"content": resp.content, "url": url, "status": resp.status_code})
+
+    except requests.exceptions.RequestException as e:
+        if logger:
+            logger.error(f"Error downloading {url}: {e}")
+
+        return Response({
+            "error": str(e),
+            "status": resp.status_code if hasattr(resp, "status_code") else None,
+            "url": url
+        })
+
+    if logger:
+        logger.error(f"Spacetime Response error {resp} with url {url}.")
+
     return Response({
         "error": f"Spacetime Response error {resp} with url {url}.",
-        "status": resp.status_code,
-        "url": url})
+        "status": resp.status_code if hasattr(resp, "status_code") else None,
+        "url": url
+    })

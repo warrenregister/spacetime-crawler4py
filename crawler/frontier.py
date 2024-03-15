@@ -200,7 +200,6 @@ class Frontier(object):
             self.save[urlhash] = (url, depth, True)
             self.save.sync()
 
-
     def handle_shelves(self, restart):
         """
         Handle shelves, delete them if restarting, create them if not restarting.

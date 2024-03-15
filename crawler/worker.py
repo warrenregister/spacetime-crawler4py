@@ -144,18 +144,6 @@ class Worker(Thread):
             for scraped_url in scraped_urls:
                 self.frontier.add_url(scraped_url, depth + 1)
             self.frontier.mark_url_complete(tbd_url, depth)
-    
-    def is_similar(self, new_simhash, simhashes):
-        """
-        Check if the new simhash is similar to any of the simhashes in the frontier.
-        """
-        if simhashes is None or new_simhash is None:
-            return False
-
-        for doc_id, old_hash in simhashes.items():
-            if new_simhash.similarity(old_hash) > self.similarity_threshold:
-                return True
-        return False
 
 
 def jaccard_similarity(url1, url2):
