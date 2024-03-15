@@ -20,7 +20,7 @@ def main(config_file, restart):
     cparser = ConfigParser()
     cparser.read(config_file)
     config = Config(cparser)
-    config.cache_server = get_cache_server(config, restart)
+    #config.cache_server = get_cache_server(config, restart)
     crawler = Crawler(config, restart)
     crawler.start()
     crawler.frontier.pickle_fields(True)
