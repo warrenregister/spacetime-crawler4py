@@ -47,7 +47,7 @@ class Frontier(object):
         self.sitemaps_lock = RLock() # lock for sitemaps
         self.logger = get_logger("FRONTIER")
         self.config = config
-        self.simhashes = {}
+        #self.simhashes = {}
         self.low_data_urls = set()
         self.error_urls = set()
         self.links_processed = 0
@@ -153,24 +153,6 @@ class Frontier(object):
             self.save[urlhash] = (fragmentless_url, depth, scraped)
             self.save.sync()
             self.domains_to_scrape[domain].put((fragmentless_url, depth))
-
-    def get_simhashes(self):
-        """
-        Get simhashes.
-        """
-        with self.simhash_lock:
-            return self.simhashes.copy()
-            
-    def add_simhash(self, url, simhash):
-        """
-        Add simhash to simhash index.
-
-        Parameters:
-            url (str): url to add
-            simhash (Simhash): Simhash to add
-        """
-        with self.simhash_lock:
-            self.simhashes[simhash] = url
     
     def get_bad_urls(self):
         """
@@ -217,175 +199,8 @@ class Frontier(object):
 
             self.save[urlhash] = (url, depth, True)
             self.save.sync()
-    
-    def get_robots_txt_parser(self, url):
-        """
-        Get robots.txt parser for domain of url.
 
-        Parameters:
-            url (str): url to get robots.txt parser for
-        
-        Returns:
-            RobotFileParser: robots.txt parser for domain of url
-        """
-        url = normalize(url)
-        domain = urlparse(url).netloc
-        with self.robots_parsers_lock:
-            if domain not in self.robots_parsers:
-                self.robots_parsers[domain] = self.download_robots_txt_parser_for_domain(domain)
-            return self.robots_parsers[domain]
-    
-    def download_robots_txt_parser_for_domain(self, domain):
-        """
-        Get robots.txt parser for domain.
 
-        Parameters:
-            domain (str): domain to get robots.txt parser for
-            config (Config): A Config object containing the crawler configuration.
-
-        Returns:
-            RobotFileParser: robots.txt parser for domain
-        """
-        robots_url = urljoin(f"https://{domain}", "robots.txt")
-        with self.lock:
-            urlhash = get_urlhash(robots_url)
-            if urlhash not in self.save:
-                self.save[urlhash] = (robots_url, 1, True)
-                self.save.sync()
-
-            # Wait for politeness delay if necessary
-            if domain in self.last_request_time:
-                time_since_last_request = time.time() - self.last_request_time[domain]
-                if time_since_last_request < self.config.politeness_delay:
-                    time.sleep(self.config.politeness_delay - time_since_last_request)
-            self.last_request_time[domain] = time.time()
-            
-            try:
-                resp = download(robots_url, self.config, self.logger)
-            except Exception as e:
-                self.logger.error(f"Error getting robots.txt from {domain}: {e}")
-                # Return an empty robots parser if there's an error
-                return CustomRobotsParser(self.config.user_agent)  # empty parser
-
-            # Check if the content type is text/plain
-            if resp.status == 200 and resp.raw_response is not None and \
-                resp.raw_response.headers.get('Content-Type', '').startswith('text/plain'):
-                robots_txt_content = resp.raw_response.content.decode("utf-8").replace('\r\n', '\n')
-                parser = CustomRobotsParser(self.config.user_agent)
-                parser.parse(robots_txt_content)
-            else:
-                self.logger.error(f"Error getting robots.txt from {domain}")
-                # Return an empty robots parser if there's an error
-                parser = CustomRobotsParser(self.config.user_agent)  # empty parser
-
-        return parser
-
-    def get_sitemap_urls_from_robots_txt(self, url):
-        """
-        Get sitemap urls from robots.txt for domain of url.
-
-        Parameters:
-            url (str): url to get sitemap urls for
-        
-        Returns:
-            list: list of sitemap urls
-        """
-        url = normalize(url)
-        domain = urlparse(url).netloc
-        with self.robots_parsers_lock and self.sitemaps_lock:
-            if domain in self.robots_parsers.keys():
-                parser = self.robots_parsers[domain]
-            else:
-                parser = self.get_robots_txt_parser(url)
-            
-            sitemap_urls = []
-            for link in parser.get_sitemaps():
-                sitemap_urls.append(link)
-        
-        self.process_sitemaps(sitemap_urls)
-
-        return sitemap_urls
-    
-    def process_sitemaps(self, sitemap_urls):
-        """
-        Process a list of sitemap urls, add new found urls to frontier.
-
-        Parameters:
-            sitemap_urls (list): list of sitemap urls
-        """
-        for sitemap_url in sitemap_urls:
-            sitemap_url = normalize(sitemap_url)
-            domain = urlparse(sitemap_url).netloc
-            with self.sitemaps_lock:
-                if domain not in self.sitemaps:
-                    self.sitemaps[domain] = set()
-                if sitemap_url not in self.sitemaps[domain]:
-                    self.sitemaps[domain].add(sitemap_url)
-
-                    urls_from_sitemap = self.get_urls_from_sitemap(sitemap_url)
-                    for url in urls_from_sitemap:
-                        if is_valid(url):
-                            self.add_url(url, 1)
-                    
-
-    def get_urls_from_sitemap(self, sitemap_url):
-        """
-        Get urls from sitemap.
-
-        Parameters:
-            sitemap_url (str): url of sitemap
-        Returns:
-            list: list of urls from sitemap
-        """
-
-        if sitemap_url in self.last_request_time:
-            time_diff = time.time() - self.last_request_time[sitemap_url]
-            if time_diff < self.politeness_delay:
-                time.sleep(time_diff)
-        
-        # respect politeness if necessary
-        domain = urlparse(sitemap_url).netloc
-        if domain in self.last_request_time:
-            time_since_last_request = time.time() - self.last_request_time[domain]
-            if time_since_last_request < self.politeness_delay:
-                time.sleep(self.politeness_delay - time_since_last_request)
-        
-        try:
-            resp = download(sitemap_url, self.config, self.logger)
-        except Exception as e:
-            self.logger.error(f"Error {e} downloading sitemap {sitemap_url}")
-            return []
-
-        if resp.status != 200:
-            self.logger.error(f"Error w/ status {resp.status} downloading sitemap {sitemap_url}")
-            return []
-
-        try:
-            root = etree.fromstring(resp.raw_response.content)
-        except etree.XMLSyntaxError:
-            self.logger.error(f"Error parsing sitemap {sitemap_url}")
-            return []
-
-        urls = []
-        namespace = root.tag.split('}')[0] + '}'
-        # Check if it's a sitemap index
-        is_sitemap_index = False
-        for sitemap_index in root.findall(namespace + "sitemap"):
-            is_sitemap_index = True
-            loc_element = sitemap_index.find(namespace + "loc")
-            if loc_element is not None:
-                sitemap_urls = self.get_urls_from_sitemap(loc_element.text)
-                urls.extend(sitemap_urls)
-
-        # If it's not a sitemap index, it's a regular sitemap
-        if not is_sitemap_index:
-            for url_element in root.findall(namespace + "url"):
-                loc_element = url_element.find(namespace + "loc")
-                if loc_element is not None:
-                    urls.append(loc_element.text)
-
-        return urls
-    
     def handle_shelves(self, restart):
         """
         Handle shelves, delete them if restarting, create them if not restarting.
@@ -408,9 +223,6 @@ class Frontier(object):
             self.save = shelve.open(self.backups + '/' + self.config.save_file)
             # check if pickle file exists, if so, load it,
             for fname, attr in [('subdomains.pkl', defaultdict(set)),
-                                ('robots_parsers.pkl', {}),
-                                ('sitemaps.pkl', {}), 
-                                ('simhashes.pkl', {}),
                                 ('last_request_time.pkl', {}),
                                 ('last_backup_time.pkl', 0),
                                 ('bad_urls.pkl', set()),
@@ -434,12 +246,6 @@ class Frontier(object):
                 time.sleep(10)
                 with open(self.backups + '/subdomains.pkl', 'wb') as f:
                     pickle.dump(self.subdomains, f)
-                with open(self.backups + '/robots_parsers.pkl', 'wb') as f:
-                    pickle.dump(self.robots_parsers, f)
-                with open(self.backups + '/sitemaps.pkl', 'wb') as f:
-                    pickle.dump(self.sitemaps, f)
-                with open(self.backups + '/simhashes.pkl', 'wb') as f:
-                    pickle.dump(self.simhashes, f)
                 with open(self.backups + '/last_request_time.pkl', 'wb') as f:
                     pickle.dump(self.last_request_time, f)
                 with open(self.backups + '/bad_urls.pkl', 'wb') as f:
