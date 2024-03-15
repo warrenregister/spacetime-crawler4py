@@ -16,8 +16,7 @@ class Response(object):
         self.error = resp_dict["error"] if "error" in resp_dict else None
         try:
             self.raw_response = (
-                pickle.loads(resp_dict["response"])
-                if "response" in resp_dict else
-                None)
+                resp_dict["content"] if "content" in resp_dict else None
+            )
         except TypeError:
             self.raw_response = None
